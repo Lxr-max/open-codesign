@@ -332,6 +332,45 @@ function mentionsModelsPrefix(message: string): boolean {
   return /\bmodels\/[-._:/a-z0-9]+\b/i.test(message);
 }
 
+/** Gateway rejected `developer` role (typically wants `system`). */
+export function looksLikeDeveloperRoleRejection(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes('developer') && lower.includes('role') && lower.includes('system');
+}
+
+/** Gateway rejected reasoning_content round-trip metadata. */
+export function looksLikeReasoningContentRejection(message: string): boolean {
+  return message.toLowerCase().includes('reasoning_content');
+}
+
+/** Broader reasoning-knob mismatch used by connection probes. */
+export function looksLikeReasoningRejection(message: string): boolean {
+  if (looksLikeReasoningContentRejection(message)) return true;
+  return (
+    /reasoning is mandatory/i.test(message) ||
+    /reasoning is required/i.test(message) ||
+    /does(?:n't| not) support (?:reasoning|thinking)/i.test(message) ||
+    /(?:reasoning|thinking)(?: is)? not supported/i.test(message) ||
+    /unknown (?:parameter|field).*reasoning/i.test(message) ||
+    /unexpected (?:parameter|field).*reasoning/i.test(message)
+  );
+}
+
+/** openai-responses payload (e.g. `instructions`) rejected by a chat-only gateway. */
+export function looksLikeResponsesShapeRejection(message: string): boolean {
+  return message.toLowerCase().includes('instructions');
+}
+
+/** Relay stubbed out the selected API with not-implemented / page-not-found. */
+export function looksLikeGatewayNotImplemented(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('not implemented') ||
+    lower.includes('page not found') ||
+    lower.includes('404 page')
+  );
+}
+
 export function diagnoseGenerateFailure(ctx: GenerateFailureContext): DiagnosticHypothesis[] {
   const message = (ctx.message ?? '').toLowerCase();
   const status = ctx.status;
@@ -424,7 +463,7 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
     ];
   }
 
-  if (message.includes('reasoning_content')) {
+  if (looksLikeReasoningContentRejection(ctx.message ?? '')) {
     return [
       h({
         cause: 'diagnostics.cause.reasoningPolicy',
@@ -439,12 +478,7 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
     ];
   }
 
-  if (
-    (status === 400 || status === 422) &&
-    message.includes('developer') &&
-    message.includes('role') &&
-    message.includes('system')
-  ) {
+  if ((status === 400 || status === 422) && looksLikeDeveloperRoleRejection(ctx.message ?? '')) {
     return [
       h({
         cause: 'diagnostics.cause.unsupportedRole',
@@ -515,7 +549,7 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
     ];
   }
 
-  if (status === 400 && message.includes('instructions')) {
+  if (status === 400 && looksLikeResponsesShapeRejection(ctx.message ?? '')) {
     return [
       h({
         cause: 'diagnostics.cause.openaiResponsesMisconfigured',
@@ -531,11 +565,7 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
-    if (
-      message.includes('not implemented') ||
-      message.includes('page not found') ||
-      message.includes('404 page')
-    ) {
+    if (looksLikeGatewayNotImplemented(ctx.message ?? '')) {
       return [
         h({
           cause: 'diagnostics.cause.gatewayIncompatible',
