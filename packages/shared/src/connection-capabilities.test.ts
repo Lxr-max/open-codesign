@@ -174,6 +174,18 @@ describe('classifyInferenceProbe', () => {
     expect(result.category).toBe('unsupported-role');
   });
 
+  it('classifies unknown-field reasoning errors as reasoning-policy, not a wire fail', () => {
+    const result = classifyInferenceProbe({
+      wire: 'openai-chat',
+      status: 400,
+      bodyText: 'Unknown field: reasoning',
+      developerRoleProbed: true,
+    });
+    expect(result.wireSupport).toBe('pass');
+    expect(result.reasoningCompatibility).toBe('fail');
+    expect(result.cause).toBe('diagnostics.cause.reasoningPolicy');
+  });
+
   it('classifies openai-responses instructions rejection as wire mismatch', () => {
     const result = classifyInferenceProbe({
       wire: 'openai-responses',

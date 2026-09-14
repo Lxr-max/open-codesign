@@ -346,13 +346,34 @@ export function looksLikeReasoningContentRejection(message: string): boolean {
 /** Broader reasoning-knob mismatch used by connection probes. */
 export function looksLikeReasoningRejection(message: string): boolean {
   if (looksLikeReasoningContentRejection(message)) return true;
+  const lower = message.toLowerCase();
+  if (lower.includes('reasoning is mandatory') || lower.includes('reasoning is required')) {
+    return true;
+  }
+  if (
+    lower.includes("doesn't support reasoning") ||
+    lower.includes('does not support reasoning') ||
+    lower.includes("doesn't support thinking") ||
+    lower.includes('does not support thinking')
+  ) {
+    return true;
+  }
+  if (
+    lower.includes('reasoning is not supported') ||
+    lower.includes('thinking is not supported') ||
+    lower.includes('reasoning not supported') ||
+    lower.includes('thinking not supported')
+  ) {
+    return true;
+  }
+  // Substring checks instead of /unknown field.*reasoning/ — that form is
+  // polynomial on repeated "unknown field" and CodeQL flagged it as ReDoS.
+  if (!lower.includes('reasoning')) return false;
   return (
-    /reasoning is mandatory/i.test(message) ||
-    /reasoning is required/i.test(message) ||
-    /does(?:n't| not) support (?:reasoning|thinking)/i.test(message) ||
-    /(?:reasoning|thinking)(?: is)? not supported/i.test(message) ||
-    /unknown (?:parameter|field).*reasoning/i.test(message) ||
-    /unexpected (?:parameter|field).*reasoning/i.test(message)
+    lower.includes('unknown parameter') ||
+    lower.includes('unknown field') ||
+    lower.includes('unexpected parameter') ||
+    lower.includes('unexpected field')
   );
 }
 
