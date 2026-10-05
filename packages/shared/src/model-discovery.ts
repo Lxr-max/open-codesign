@@ -111,11 +111,41 @@ export function isDefaultAnthropicApiHost(baseUrl: string): boolean {
   }
 }
 
+/**
+ * Hosts whose public API exposes GET /models. Codex imports on any other
+ * host are proxies or custom gateways and stay infer-only, matching the
+ * Claude Code split between the official API host and a custom base URL.
+ */
+const LISTING_CAPABLE_OFFICIAL_HOSTS: ReadonlySet<string> = new Set([
+  'api.anthropic.com',
+  'api.atlascloud.ai',
+  'api.cerebras.ai',
+  'api.deepseek.com',
+  'api.fireworks.ai',
+  'api.groq.com',
+  'api.mistral.ai',
+  'api.openai.com',
+  'api.together.xyz',
+  'api.x.ai',
+  'generativelanguage.googleapis.com',
+  'openrouter.ai',
+]);
+
+export function isListingCapableOfficialHost(baseUrl: string): boolean {
+  try {
+    return LISTING_CAPABLE_OFFICIAL_HOSTS.has(new URL(baseUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export function discoveryModeForImport(
   source: ImportedProviderSource,
   entry: { baseUrl: string; wire?: WireApi },
 ): ProviderModelDiscoveryMode {
-  if (source === 'codex') return 'infer-only';
+  if (source === 'codex') {
+    return isListingCapableOfficialHost(entry.baseUrl) ? 'models' : 'infer-only';
+  }
   if (source === 'claude-code') {
     return isDefaultAnthropicApiHost(entry.baseUrl) ? 'models' : 'infer-only';
   }

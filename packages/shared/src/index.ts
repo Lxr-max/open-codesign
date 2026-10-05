@@ -399,6 +399,7 @@ export {
   discoveryModeForCustomProvider,
   discoveryModeForImport,
   isDefaultAnthropicApiHost,
+  isListingCapableOfficialHost,
   localModelsForDiscoveryMode,
   looksLikeModelsListingUrl,
   mergeDiscoveryMode,

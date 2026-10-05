@@ -154,10 +154,40 @@ describe('import and custom defaults', () => {
     );
   });
 
-  it('treats Codex imports as infer-only (one known default, no listing contract)', () => {
+  it('uses /models for official Codex hosts and infer-only for custom or proxy hosts', () => {
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://api.openai.com/v1' })).toBe(
+      'models',
+    );
     expect(discoveryModeForImport('codex', { baseUrl: 'https://api.deepseek.com/v1' })).toBe(
+      'models',
+    );
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://api.groq.com/openai/v1' })).toBe(
+      'models',
+    );
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://api.mistral.ai/v1' })).toBe(
+      'models',
+    );
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://api.x.ai/v1' })).toBe('models');
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://openrouter.ai/api/v1' })).toBe(
+      'models',
+    );
+    expect(discoveryModeForImport('codex', { baseUrl: 'https://api.duckcoding.ai/v1' })).toBe(
       'infer-only',
     );
+    expect(discoveryModeForImport('codex', { baseUrl: 'http://127.0.0.1:8537/v1' })).toBe(
+      'infer-only',
+    );
+    expect(
+      discoveryModeForImport('codex', { baseUrl: 'https://org.openai.azure.com/openai' }),
+    ).toBe('infer-only');
+    expect(
+      capabilitiesForImportedProvider('codex', { baseUrl: 'https://api.deepseek.com/v1' })
+        .supportsModelsEndpoint,
+    ).toBe(true);
+    expect(
+      capabilitiesForImportedProvider('codex', { baseUrl: 'http://localhost:11434/v1' })
+        .supportsModelsEndpoint,
+    ).toBe(false);
   });
 
   it('stamps custom-provider modes from discovery outcome', () => {

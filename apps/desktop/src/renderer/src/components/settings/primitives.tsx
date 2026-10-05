@@ -1,6 +1,9 @@
 import { getCurrentLocale, useT } from '@open-codesign/i18n';
 import {
+  connectionTestProbesModelsEndpoint,
+  type ErrorCode,
   localModelsForDiscoveryMode,
+  modelsEndpointUrl,
   type OnboardingState,
   type ProviderModelDiscoveryMode,
   type ReasoningLevel,
@@ -24,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProviderRow } from '../../../../preload/index';
 import { recordAction } from '../../lib/action-timeline';
 import { useCodesignStore } from '../../store';
+import { ConnectionDiagnosticPanel } from '../ConnectionDiagnosticPanel';
 
 /**
  * Electron IPC wraps thrown errors as
@@ -298,6 +302,18 @@ export function ProviderOverflowMenu({
   );
 }
 
+export function modelsListingAttemptUrl(
+  row: Pick<ProviderRow, 'baseUrl' | 'wire' | 'modelDiscoveryMode'>,
+): string | undefined {
+  if (row.baseUrl === null || row.baseUrl.length === 0) return undefined;
+  if (!connectionTestProbesModelsEndpoint(row.modelDiscoveryMode)) return undefined;
+  try {
+    return modelsEndpointUrl(row.baseUrl, row.wire);
+  } catch {
+    return undefined;
+  }
+}
+
 export function ProviderCard({
   row,
   config,
@@ -318,6 +334,10 @@ export function ProviderCard({
   const reportableErrorToast = useCodesignStore((s) => s.reportableErrorToast);
   const label = row.label ?? row.provider;
   const hasError = row.error !== undefined;
+  const [connectionDiag, setConnectionDiag] = useState<{
+    errorCode: ErrorCode;
+    httpStatus: string;
+  } | null>(null);
 
   const stateClass = hasError
     ? 'border-[var(--color-error)] bg-[var(--color-surface)]'
@@ -339,6 +359,7 @@ export function ProviderCard({
       const res = await window.codesign.connection.testProvider(row.provider);
       recordAction({ type: 'connection.test', data: { provider: row.provider, ok: res.ok } });
       if (res.ok) {
+        setConnectionDiag(null);
         pushToast({
           variant: res.compatibility === 'degraded' ? 'info' : 'success',
           title:
@@ -347,6 +368,7 @@ export function ProviderCard({
               : t('settings.providers.toast.connectionOk'),
         });
       } else {
+        setConnectionDiag({ errorCode: res.code, httpStatus: res.message });
         reportableErrorToast({
           code: 'CONNECTION_TEST_FAILED',
           scope: 'settings',
@@ -356,16 +378,20 @@ export function ProviderCard({
         });
       }
     } catch (err) {
+      const description = cleanIpcError(err) || t('settings.common.unknownError');
+      setConnectionDiag({ errorCode: 'NETWORK', httpStatus: description });
       reportableErrorToast({
         code: 'CONNECTION_TEST_FAILED',
         scope: 'settings',
         title: t('settings.providers.toast.connectionFailed'),
-        description: cleanIpcError(err) || t('settings.common.unknownError'),
+        description,
         ...(err instanceof Error && err.stack !== undefined ? { stack: err.stack } : {}),
         context: { provider: row.provider },
       });
     }
   }
+
+  const attemptedUrl = modelsListingAttemptUrl(row);
 
   return (
     <div
@@ -439,6 +465,45 @@ export function ProviderCard({
           value={row.reasoningLevel}
           onUpdated={onRowChanged}
         />
+      )}
+      {connectionDiag !== null && (
+        <div className="mt-[var(--space-2)]">
+          <ConnectionDiagnosticPanel
+            errorCode={connectionDiag.errorCode}
+            httpStatus={connectionDiag.httpStatus}
+            baseUrl={row.baseUrl ?? ''}
+            provider={row.provider}
+            modelDiscoveryMode={row.modelDiscoveryMode}
+            {...(attemptedUrl !== undefined ? { attemptedUrl } : {})}
+            onApplyFix={(nextBaseUrl) => {
+              void (async () => {
+                if (!window.codesign?.config?.updateProvider) return;
+                try {
+                  await window.codesign.config.updateProvider({
+                    id: row.provider,
+                    baseUrl: nextBaseUrl,
+                  });
+                  onRowChanged({ ...row, baseUrl: nextBaseUrl });
+                  setConnectionDiag(null);
+                } catch (err) {
+                  reportableErrorToast({
+                    code: 'CONNECTION_FIX_APPLY_FAILED',
+                    scope: 'settings',
+                    title: t('settings.providers.toast.saveFailed'),
+                    description: cleanIpcError(err) || t('settings.common.unknownError'),
+                    ...(err instanceof Error && err.stack !== undefined
+                      ? { stack: err.stack }
+                      : {}),
+                  });
+                }
+              })();
+            }}
+            onTestAgain={() => {
+              void handleTestConnection();
+            }}
+            onDismiss={() => setConnectionDiag(null)}
+          />
+        </div>
       )}
     </div>
   );

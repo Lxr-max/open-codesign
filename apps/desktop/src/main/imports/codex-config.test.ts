@@ -31,8 +31,8 @@ wire_api = "chat"
     expect(entry?.envKey).toBe('DEEPSEEK_API_KEY');
     expect(entry?.defaultModel).toBe('deepseek-chat');
     expect(entry?.capabilities).toMatchObject({
-      modelDiscoveryMode: 'infer-only',
-      supportsModelsEndpoint: false,
+      modelDiscoveryMode: 'models',
+      supportsModelsEndpoint: true,
     });
     expect(out.activeProvider).toBe('codex-deepseek');
     expect(out.activeModel).toBe('deepseek-chat');
@@ -51,6 +51,7 @@ wire_api = "responses"
     expect(out.providers[0]?.wire).toBe('openai-responses');
     expect(out.providers[0]?.queryParams?.['api-version']).toBe('2025-04-01-preview');
     expect(out.providers[0]?.defaultModel).toBe('gpt-4o');
+    expect(out.providers[0]?.capabilities?.modelDiscoveryMode).toBe('infer-only');
   });
 
   it('marks Codex providers that require OpenAI auth', async () => {
@@ -78,6 +79,10 @@ wire_api = "responses"
     expect(out.providers[0]).toMatchObject({
       id: 'codex-coproxy',
       requiresApiKey: false,
+      capabilities: {
+        modelDiscoveryMode: 'infer-only',
+        supportsModelsEndpoint: false,
+      },
     });
     expect(out.activeProvider).toBe('codex-coproxy');
   });
