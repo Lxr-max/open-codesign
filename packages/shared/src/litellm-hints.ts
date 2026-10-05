@@ -1,14 +1,15 @@
 /**
  * LiteLLM Gateway connection failures get their own hints. The saved provider
  * is still a normal OpenAI-compatible entry, so identity comes from the preset
- * id, a name/id that says LiteLLM, or the preset's default loopback port.
- * Port 4000 still counts when the display name changed, and when a 404 is just
- * a missing /v1 on that same proxy.
+ * id, a name or provider id that says LiteLLM, or a base URL whose host or
+ * path says LiteLLM. The port is not a signal: other local servers also use
+ * port 4000.
  */
 
 export const LITELLM_CONNECTION_HINT_KEYS = {
   auth: 'settings.providers.litellm.diagnostics.auth',
   notFound: 'settings.providers.litellm.diagnostics.notFound',
+  notFoundLocal: 'settings.providers.litellm.diagnostics.notFoundLocal',
   unreachable: 'settings.providers.litellm.diagnostics.unreachable',
 } as const;
 
@@ -19,23 +20,24 @@ export interface LiteLlmTargetInput {
   baseUrl?: string | undefined;
 }
 
-const LITELLM_PRESET_PORT = '4000';
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
-
 export function isLiteLlmConnectionTarget(input: LiteLlmTargetInput): boolean {
   if (input.presetId === 'litellm') return true;
   const label = `${input.name ?? ''} ${input.providerId ?? ''}`.toLowerCase();
   if (label.includes('litellm')) return true;
-  return isLiteLlmDefaultPort(input.baseUrl);
+  return urlMentionsLiteLlm(input.baseUrl);
 }
 
 export function liteLlmEndpointPreset(input: LiteLlmTargetInput): { presetId?: 'litellm' } {
   return isLiteLlmConnectionTarget(input) ? { presetId: 'litellm' } : {};
 }
 
-export function liteLlmHintKeyForHttpStatus(status: number): string | undefined {
+export function liteLlmHintKeyForHttpStatus(status: number, baseUrl?: string): string | undefined {
   if (status === 401 || status === 403) return LITELLM_CONNECTION_HINT_KEYS.auth;
-  if (status === 404) return LITELLM_CONNECTION_HINT_KEYS.notFound;
+  if (status === 404) {
+    return isLoopbackBaseUrl(baseUrl)
+      ? LITELLM_CONNECTION_HINT_KEYS.notFoundLocal
+      : LITELLM_CONNECTION_HINT_KEYS.notFound;
+  }
   return undefined;
 }
 
@@ -45,18 +47,33 @@ export function liteLlmHintKeyForTransportError(err: unknown): string | undefine
     : undefined;
 }
 
-function isLiteLlmDefaultPort(baseUrl: string | undefined): boolean {
-  if (baseUrl === undefined || baseUrl.length === 0) return false;
-  let url: URL;
+function urlMentionsLiteLlm(baseUrl: string | undefined): boolean {
+  const url = parseBaseUrl(baseUrl);
+  if (url === null) return false;
+  const host = hostnameOf(url);
+  return host.includes('litellm') || url.pathname.toLowerCase().includes('litellm');
+}
+
+function isLoopbackBaseUrl(baseUrl: string | undefined): boolean {
+  const url = parseBaseUrl(baseUrl);
+  if (url === null) return false;
+  const host = hostnameOf(url);
+  return (
+    host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '::1'
+  );
+}
+
+function parseBaseUrl(baseUrl: string | undefined): URL | null {
+  if (baseUrl === undefined || baseUrl.length === 0) return null;
   try {
-    url = new URL(baseUrl);
+    return new URL(baseUrl);
   } catch {
-    return false;
+    return null;
   }
-  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (!LOOPBACK_HOSTS.has(host)) return false;
-  const port = url.port.length > 0 ? url.port : url.protocol === 'https:' ? '443' : '80';
-  return port === LITELLM_PRESET_PORT;
+}
+
+function hostnameOf(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
 }
 
 function transportSignals(err: unknown): string {

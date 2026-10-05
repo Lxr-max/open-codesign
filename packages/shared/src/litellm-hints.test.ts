@@ -8,7 +8,7 @@ import {
 } from './litellm-hints';
 
 describe('isLiteLlmConnectionTarget', () => {
-  it('matches the preset id, a LiteLLM name or id, and the default proxy port', () => {
+  it('matches the preset id, a LiteLLM name or id, and a LiteLLM host or path', () => {
     expect(isLiteLlmConnectionTarget({ presetId: 'litellm' })).toBe(true);
     expect(
       isLiteLlmConnectionTarget({
@@ -22,12 +22,11 @@ describe('isLiteLlmConnectionTarget', () => {
         baseUrl: 'https://llm.example/v1',
       }),
     ).toBe(true);
-    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://localhost:4000/v1' })).toBe(true);
-    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://127.0.0.1:4000' })).toBe(true);
-    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://[::1]:4000/v1' })).toBe(true);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'https://litellm.example/v1' })).toBe(true);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'https://gateway.example/litellm/v1' })).toBe(true);
   });
 
-  it('does not treat other gateways as LiteLLM', () => {
+  it('does not treat other gateways as LiteLLM, including loopback port 4000', () => {
     expect(
       isLiteLlmConnectionTarget({
         name: 'one-api',
@@ -36,6 +35,12 @@ describe('isLiteLlmConnectionTarget', () => {
       }),
     ).toBe(false);
     expect(isLiteLlmConnectionTarget({ baseUrl: 'https://api.openai.com/v1' })).toBe(false);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://localhost:4000/v1' })).toBe(false);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://127.0.0.1:4000' })).toBe(false);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'http://[::1]:4000/v1' })).toBe(false);
+    expect(isLiteLlmConnectionTarget({ baseUrl: 'https://example.com/v1?gateway=litellm' })).toBe(
+      false,
+    );
     expect(isLiteLlmConnectionTarget({ baseUrl: 'not a url' })).toBe(false);
   });
 
@@ -52,6 +57,21 @@ describe('LiteLLM connection hint keys', () => {
     expect(liteLlmHintKeyForHttpStatus(401)).toBe(LITELLM_CONNECTION_HINT_KEYS.auth);
     expect(liteLlmHintKeyForHttpStatus(403)).toBe(LITELLM_CONNECTION_HINT_KEYS.auth);
     expect(liteLlmHintKeyForHttpStatus(404)).toBe(LITELLM_CONNECTION_HINT_KEYS.notFound);
+    expect(liteLlmHintKeyForHttpStatus(404, 'https://llm.example/v1')).toBe(
+      LITELLM_CONNECTION_HINT_KEYS.notFound,
+    );
+    expect(liteLlmHintKeyForHttpStatus(404, 'http://localhost:4000/v1')).toBe(
+      LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+    );
+    expect(liteLlmHintKeyForHttpStatus(404, 'http://127.0.0.1:4000')).toBe(
+      LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+    );
+    expect(liteLlmHintKeyForHttpStatus(404, 'http://[::1]:8080/v1')).toBe(
+      LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+    );
+    expect(liteLlmHintKeyForHttpStatus(404, 'http://192.168.1.8:4000/v1')).toBe(
+      LITELLM_CONNECTION_HINT_KEYS.notFound,
+    );
     expect(liteLlmHintKeyForHttpStatus(500)).toBeUndefined();
   });
 

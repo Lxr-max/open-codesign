@@ -1684,13 +1684,44 @@ describe('LiteLLM connection diagnostics', () => {
           baseUrl: 'http://127.0.0.1:4000',
           apiKey: 'sk-test',
           allowPrivateNetwork: true,
+          presetId: 'litellm',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+      });
+    } finally {
+      missing();
+    }
+
+    const remoteMissing = statusFetch(404);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://gateway.example/litellm/v1',
+          apiKey: 'sk-test',
         }),
       ).resolves.toMatchObject({
         ok: false,
         hintKey: LITELLM_CONNECTION_HINT_KEYS.notFound,
       });
     } finally {
-      missing();
+      remoteMissing();
+    }
+
+    const portOnly = statusFetch(404);
+    try {
+      const res = await handleConfigV1TestEndpoint({
+        wire: 'openai-chat',
+        baseUrl: 'http://127.0.0.1:4000',
+        apiKey: 'sk-test',
+        allowPrivateNetwork: true,
+      });
+      expect(res).toEqual({ ok: false, error: 'not-a-model-endpoint', message: 'HTTP 404' });
+      expect(res).not.toHaveProperty('hintKey');
+    } finally {
+      portOnly();
     }
 
     const refused = refusedFetch();
@@ -1702,6 +1733,7 @@ describe('LiteLLM connection diagnostics', () => {
           apiKey: '',
           requiresApiKey: false,
           allowPrivateNetwork: true,
+          presetId: 'litellm',
         }),
       ).resolves.toMatchObject({
         ok: false,
@@ -1710,6 +1742,21 @@ describe('LiteLLM connection diagnostics', () => {
       });
     } finally {
       refused();
+    }
+
+    const refusedOther = refusedFetch();
+    try {
+      const res = await handleConfigV1TestEndpoint({
+        wire: 'openai-chat',
+        baseUrl: 'http://localhost:4000/v1',
+        apiKey: '',
+        requiresApiKey: false,
+        allowPrivateNetwork: true,
+      });
+      expect(res).toMatchObject({ ok: false, error: 'network' });
+      expect(res).not.toHaveProperty('hintKey');
+    } finally {
+      refusedOther();
     }
 
     const other = statusFetch(401);
@@ -1777,6 +1824,40 @@ describe('LiteLLM connection diagnostics', () => {
       });
     } finally {
       missing();
+    }
+
+    const localMissing = statusFetch(404);
+    try {
+      await expect(
+        runProviderTest({
+          provider: 'custom-litellm-gateway-ab12',
+          name: 'Renamed gateway',
+          wire: 'openai-chat',
+          apiKey: '',
+          baseUrl: 'http://localhost:4000/v1',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: '404',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+      });
+    } finally {
+      localMissing();
+    }
+
+    const portOnly = statusFetch(404);
+    try {
+      const res = await runProviderTest({
+        provider: 'custom-other',
+        name: 'Other gateway',
+        wire: 'openai-chat',
+        apiKey: '',
+        baseUrl: 'http://localhost:4000/v1',
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.hintKey).toBeUndefined();
+    } finally {
+      portOnly();
     }
 
     const unrelated = statusFetch(401);

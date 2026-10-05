@@ -176,6 +176,7 @@ describe('LiteLLM connection diagnostics', () => {
   const keys = [
     'settings.providers.litellm.diagnostics.auth',
     'settings.providers.litellm.diagnostics.notFound',
+    'settings.providers.litellm.diagnostics.notFoundLocal',
     'settings.providers.litellm.diagnostics.unreachable',
   ] as const;
 
@@ -189,11 +190,14 @@ describe('LiteLLM connection diagnostics', () => {
     await initI18n(locale);
     const authText = i18n.t(keys[0]);
     const notFound = i18n.t(keys[1]);
-    const unreachable = i18n.t(keys[2]);
+    const notFoundLocal = i18n.t(keys[2]);
+    const unreachable = i18n.t(keys[3]);
     expect(authText).toContain(auth);
     expect(authText).toContain(keyless);
     expect(notFound).toContain(suffix);
-    expect(notFound).toContain(port);
+    expect(notFound).not.toContain('4000');
+    expect(notFoundLocal).toContain(suffix);
+    expect(notFoundLocal).toContain(port);
     expect(unreachable).toContain(start);
     for (const key of keys) {
       expect(i18n.t(key)).not.toBe(key);

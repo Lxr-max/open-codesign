@@ -373,8 +373,8 @@ function withHintKey<T extends object>(
   return { ...body, hintKey };
 }
 
-function liteLlmHttpHint(litellm: boolean, status: number): string | undefined {
-  return litellm ? liteLlmHintKeyForHttpStatus(status) : undefined;
+function liteLlmHttpHint(litellm: boolean, status: number, baseUrl?: string): string | undefined {
+  return litellm ? liteLlmHintKeyForHttpStatus(status, baseUrl) : undefined;
 }
 
 function liteLlmTransportHint(litellm: boolean, err: unknown): string | undefined {
@@ -684,7 +684,13 @@ export async function runProviderTest(
           creds.wire === 'openai-responses' ||
           creds.wire === 'anthropic')
       ) {
-        const degraded = await tryDegradeProbe(creds.wire, normalizedBaseUrl, headers, litellm);
+        const degraded = await tryDegradeProbe(
+          creds.wire,
+          normalizedBaseUrl,
+          headers,
+          litellm,
+          creds.baseUrl,
+        );
         if (degraded !== null) return degraded;
         // Inference endpoint also 404'd (or the network dropped) — fall through
         // and report the original /models 404.
@@ -699,7 +705,7 @@ export async function runProviderTest(
           compatibility: 'incompatible' as const,
           reasonCategory: connectionCategoryForStatus(res.status, normalizedBaseUrl),
         },
-        liteLlmHttpHint(litellm, res.status),
+        liteLlmHttpHint(litellm, res.status, creds.baseUrl),
       );
     }
     return { ok: true, probeMethod: 'models', compatibility: 'compatible' };
@@ -711,6 +717,7 @@ async function tryDegradeProbe(
   normalizedBaseUrl: string,
   headers: Record<string, string>,
   litellm: boolean,
+  baseUrl?: string,
 ): Promise<ConnectionTestResponse | null> {
   const probe = await probeInferenceEndpoint(wire, normalizedBaseUrl, headers);
   if (probe.kind === 'pass') {
@@ -737,7 +744,7 @@ async function tryDegradeProbe(
         compatibility: 'incompatible' as const,
         reasonCategory: connectionCategoryForStatus(probe.status, normalizedBaseUrl),
       },
-      liteLlmHttpHint(litellm, probe.status),
+      liteLlmHttpHint(litellm, probe.status, baseUrl),
     );
   }
   return null;
@@ -1053,6 +1060,7 @@ export async function handleModelsV1ListForProvider(raw: unknown): Promise<Model
         hint: 'Check provider /models endpoint compatibility',
       },
       litellm,
+      entry.baseUrl,
     ),
   );
   if (result.ok) setCachedModels(providerId, entry.baseUrl, apiKey, result.models);
@@ -1064,6 +1072,7 @@ async function fetchModelListResponse(
   headers: Record<string, string>,
   shapeError: { message: string; hint: string },
   litellm = false,
+  baseUrl?: string,
 ): Promise<ModelsListResponse> {
   let res: Response;
   try {
@@ -1088,7 +1097,7 @@ async function fetchModelListResponse(
         message: `HTTP ${res.status}`,
         hint: 'Model list request failed',
       },
-      liteLlmHttpHint(litellm, res.status),
+      liteLlmHttpHint(litellm, res.status, baseUrl),
     );
   }
 
@@ -1172,7 +1181,11 @@ export async function handleConfigV1TestEndpoint(raw: unknown): Promise<TestEndp
     );
   }
 
-  const statusError = classifyTestEndpointStatus(res.status, endpointTargetsLiteLlm(payload));
+  const statusError = classifyTestEndpointStatus(
+    res.status,
+    endpointTargetsLiteLlm(payload),
+    payload.baseUrl,
+  );
   if (statusError !== null) return statusError;
 
   let body: unknown;
@@ -1192,17 +1205,21 @@ export async function handleConfigV1TestEndpoint(raw: unknown): Promise<TestEndp
   return { ok: true, modelCount: ids.length, models: ids };
 }
 
-function classifyTestEndpointStatus(status: number, litellm: boolean): TestEndpointResponse | null {
+function classifyTestEndpointStatus(
+  status: number,
+  litellm: boolean,
+  baseUrl: string,
+): TestEndpointResponse | null {
   if (status === 401 || status === 403) {
     return withHintKey(
       { ok: false as const, error: 'auth', message: `HTTP ${status}` },
-      liteLlmHttpHint(litellm, status),
+      liteLlmHttpHint(litellm, status, baseUrl),
     );
   }
   if (status === 404) {
     return withHintKey(
       { ok: false as const, error: 'not-a-model-endpoint', message: 'HTTP 404' },
-      liteLlmHttpHint(litellm, status),
+      liteLlmHttpHint(litellm, status, baseUrl),
     );
   }
   if (status < 200 || status >= 300) {
