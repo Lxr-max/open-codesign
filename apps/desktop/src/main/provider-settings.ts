@@ -31,6 +31,8 @@ export interface ProviderRow {
   hasKey: boolean;
   requiresApiKey?: boolean;
   reasoningLevel?: ReasoningLevel;
+  /** Configured context window in tokens; absent when core resolves it. */
+  contextWindow?: number;
   /** Per-provider TLS verification opt-out (#229). Only surfaced for
    *  custom / imported providers; the runtime force-ignores it on built-ins. */
   tlsRejectUnauthorized?: boolean;
@@ -177,6 +179,7 @@ export function toProviderRows(
         ? { modelsHint: entry.modelsHint }
         : {}),
       ...(entry?.reasoningLevel !== undefined ? { reasoningLevel: entry.reasoningLevel } : {}),
+      ...(entry?.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
       ...(entry?.tlsRejectUnauthorized === true ? { tlsRejectUnauthorized: true } : {}),
       ...(rowError !== undefined ? { error: rowError } : {}),
     });
@@ -234,6 +237,7 @@ export interface ActiveModelResolution {
   httpHeaders: Record<string, string> | undefined;
   queryParams: Record<string, string> | undefined;
   reasoningLevel: ReasoningLevel | undefined;
+  contextWindow: number | undefined;
   allowKeyless: boolean;
   /** True when the renderer-supplied hint provider didn't match the canonical active. */
   overridden: boolean;
@@ -267,6 +271,7 @@ export function resolveActiveModel(
     httpHeaders: entry.httpHeaders,
     queryParams: entry.queryParams,
     reasoningLevel: entry.reasoningLevel,
+    contextWindow: entry.contextWindow,
     allowKeyless,
     overridden,
   };

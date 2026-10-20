@@ -3,12 +3,14 @@ import {
   canonicalBaseUrl,
   detectWireFromBaseUrl,
   discoveryModeForCustomProvider,
+  liteLlmEndpointPreset,
   type ProviderModelDiscoveryMode,
   type WireApi,
 } from '@open-codesign/shared';
 import { Button } from '@open-codesign/ui';
 import { AlertCircle, Check, CheckCircle, Loader2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { connectionFailureText } from '../lib/connection-failure-text';
 
 interface Props {
   onSave: () => void;
@@ -28,6 +30,8 @@ interface Props {
     requiresApiKey?: boolean;
     /** Preset-specific setup note shown above the form. */
     hint?: string;
+    /** Set when the form was opened from the LiteLLM Gateway preset. */
+    presetId?: 'litellm';
   };
   /**
    * Edit-mode: pre-fill every field from an existing provider and save via
@@ -61,13 +65,13 @@ type TestState =
   | { kind: 'testing' }
   | { kind: 'ok'; modelCount: number }
   | { kind: 'listing-unavailable' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; hintKey?: string };
 
 type DiscoveryState =
   | { kind: 'idle' }
   | { kind: 'discovering' }
   | { kind: 'found'; models: string[] }
-  | { kind: 'failed' };
+  | { kind: 'failed'; hintKey?: string };
 
 /** Priority-ordered model selection after a successful discovery. */
 function pickBestModel(models: string[]): string {
@@ -234,7 +238,15 @@ export function AddCustomProviderModal({
     const seq = ++discoverySeq.current;
     setDiscovery({ kind: 'discovering' });
     try {
-      const res = await window.codesign.config.testEndpoint(payload);
+      const res = await window.codesign.config.testEndpoint({
+        ...payload,
+        ...liteLlmEndpointPreset({
+          presetId: initialValues?.presetId,
+          providerId: editTarget?.id,
+          name,
+          baseUrl: payload.baseUrl,
+        }),
+      });
       if (seq !== discoverySeq.current) return;
       if (res.ok && res.models.length > 0) {
         setDiscovery({ kind: 'found', models: res.models });
@@ -242,6 +254,8 @@ export function AddCustomProviderModal({
           const best = pickBestModel(res.models);
           setDefaultModel(best);
         }
+      } else if (!res.ok && res.hintKey !== undefined) {
+        setDiscovery({ kind: 'failed', hintKey: res.hintKey });
       } else {
         setDiscovery({ kind: 'failed' });
       }
@@ -321,12 +335,19 @@ export function AddCustomProviderModal({
     const seq = ++discoverySeq.current;
     setTest({ kind: 'testing' });
     try {
+      const trimmedBaseUrl = baseUrl.trim();
       const res = await window.codesign.config.testEndpoint({
         wire,
-        baseUrl: baseUrl.trim(),
+        baseUrl: trimmedBaseUrl,
         ...buildProviderAuthPayload(requiresApiKey, apiKey),
         allowPrivateNetwork,
         ...(tlsRejectUnauthorized ? { tlsRejectUnauthorized: true } : {}),
+        ...liteLlmEndpointPreset({
+          presetId: initialValues?.presetId,
+          providerId: editTarget?.id,
+          name,
+          baseUrl: trimmedBaseUrl,
+        }),
       });
       if (seq !== discoverySeq.current) return;
       if (res.ok) {
@@ -341,7 +362,13 @@ export function AddCustomProviderModal({
         discoveryTouched.current = true;
         setDiscovery((current) => (current.kind === 'found' ? current : { kind: 'failed' }));
         setTest({ kind: 'listing-unavailable' });
-      } else setTest({ kind: 'error', message: res.message });
+      } else {
+        setTest({
+          kind: 'error',
+          message: res.message,
+          ...(res.hintKey !== undefined ? { hintKey: res.hintKey } : {}),
+        });
+      }
     } catch (err) {
       if (seq === discoverySeq.current) {
         setTest({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -621,7 +648,9 @@ export function AddCustomProviderModal({
             ) : discovery.kind === 'failed' ? (
               <span className="inline-flex items-center gap-1 text-[var(--text-xs)] text-[var(--color-text-muted)]">
                 <AlertCircle className="w-3 h-3" />
-                {t('settings.providers.custom.discoveryFailed')}
+                {discovery.hintKey !== undefined
+                  ? t(discovery.hintKey)
+                  : t('settings.providers.custom.discoveryFailed')}
               </span>
             ) : null
           }
@@ -699,8 +728,12 @@ export function AddCustomProviderModal({
             </span>
           )}
           {test.kind === 'error' && (
-            <span className="text-[var(--text-xs)] text-[var(--color-error)] truncate">
-              {test.message}
+            <span
+              className={`text-[var(--text-xs)] text-[var(--color-error)] ${
+                test.hintKey !== undefined ? 'leading-5' : 'truncate'
+              }`}
+            >
+              {connectionFailureText(t, test)}
             </span>
           )}
         </div>
