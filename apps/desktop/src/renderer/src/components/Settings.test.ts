@@ -163,32 +163,42 @@ describe('settings navigation', () => {
 });
 
 describe('resolveTimeoutOptions', () => {
-  it('covers the default 1200s stored value and long-generation 30m / 1h / 2h choices so users can configure what they need without hitting the old 300s ceiling', () => {
+  it('covers the default 1200s stored value plus long overnight and no-timeout choices', () => {
     expect(TIMEOUT_OPTION_SECONDS).toContain(1200);
     expect(TIMEOUT_OPTION_SECONDS).toContain(1800);
     expect(TIMEOUT_OPTION_SECONDS).toContain(3600);
     expect(TIMEOUT_OPTION_SECONDS).toContain(7200);
+    expect(TIMEOUT_OPTION_SECONDS).toContain(21600);
+    expect(TIMEOUT_OPTION_SECONDS).toContain(43200);
+    expect(TIMEOUT_OPTION_SECONDS).toContain(86400);
+    expect(TIMEOUT_OPTION_SECONDS).toContain(0);
   });
 
   it('returns the canonical options unchanged when the stored value is already present', () => {
     const options = resolveTimeoutOptions(1200);
-    expect(options).toEqual([...TIMEOUT_OPTION_SECONDS]);
+    expect(options).toEqual(
+      [...TIMEOUT_OPTION_SECONDS].sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b)),
+    );
   });
 
   it("merges a stored value that is not in the canonical list and keeps the list sorted so the select shows the user's existing choice instead of silently downgrading on save", () => {
     const options = resolveTimeoutOptions(900);
     expect(options).toContain(900);
-    expect(options).toEqual([...options].sort((a, b) => a - b));
+    expect(options).toEqual(
+      [...options].sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b)),
+    );
     // Canonical entries are preserved.
     for (const sec of TIMEOUT_OPTION_SECONDS) {
       expect(options).toContain(sec);
     }
   });
 
-  it('ignores non-positive or non-finite stored values rather than injecting bogus options', () => {
-    expect(resolveTimeoutOptions(0)).toEqual([...TIMEOUT_OPTION_SECONDS]);
-    expect(resolveTimeoutOptions(-1)).toEqual([...TIMEOUT_OPTION_SECONDS]);
-    expect(resolveTimeoutOptions(Number.NaN)).toEqual([...TIMEOUT_OPTION_SECONDS]);
-    expect(resolveTimeoutOptions(Number.POSITIVE_INFINITY)).toEqual([...TIMEOUT_OPTION_SECONDS]);
+  it('keeps 0 (no timeout) last in the list and ignores negative / non-finite values', () => {
+    const canonical = resolveTimeoutOptions(1200);
+    expect(resolveTimeoutOptions(0)).toEqual(canonical);
+    expect(canonical[canonical.length - 1]).toBe(0);
+    expect(resolveTimeoutOptions(-1)).toEqual(canonical);
+    expect(resolveTimeoutOptions(Number.NaN)).toEqual(canonical);
+    expect(resolveTimeoutOptions(Number.POSITIVE_INFINITY)).toEqual(canonical);
   });
 });

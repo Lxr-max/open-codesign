@@ -510,4 +510,12 @@ describe('applyProxyConfig()', () => {
     expect(process.env['http_proxy']).toBe('http://10.0.0.1:8080');
     expect(setProxyMock).toHaveBeenCalledWith({ proxyRules: 'http://10.0.0.1:8080' });
   });
+
+  it('accepts generationTimeoutSec 0 as disabled timeout', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, updateChannel: 'stable', generationTimeoutSec: 0 }),
+    );
+    await expect(readPersisted()).resolves.toMatchObject({ generationTimeoutSec: 0 });
+  });
+
 });
