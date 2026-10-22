@@ -53,6 +53,38 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
+function sniffImageMimeType(buffer: Buffer): string | null {
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  if (
+    buffer.length >= 6 &&
+    (buffer.toString('ascii', 0, 6) === 'GIF87a' || buffer.toString('ascii', 0, 6) === 'GIF89a')
+  ) {
+    return 'image/gif';
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return 'image/bmp';
+  }
+  return null;
+}
+
 const MAX_ATTACHMENT_CHARS = 6_000;
 const MAX_TEXT_ATTACHMENT_BYTES = 256_000;
 const MAX_BINARY_ATTACHMENT_BYTES = 10_000_000; // 10MB - images get a full read for the data URL, Office documents a full read for their text; other binary files stay filename-only
@@ -491,16 +523,21 @@ async function openAttachment(
       candidates.push({ readPath: file.path, promptPath: file.path });
     }
   } else {
-    candidates.push({ readPath: file.path, promptPath: file.path });
-    if (workspaceRoot !== undefined) {
-      const promptPath = workspaceAttachmentRelativePath(file.path);
-      if (promptPath !== null) {
-        candidates.push({
-          readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, promptPath),
-          promptPath,
-        });
-      }
+    // Absolute host paths (Windows clipboard temp files, picker results before
+    // import, etc.) must not leak into the model-facing promptPath: a remote
+    // OpenServer on Linux cannot open C:\\Users\\... (#415). Prefer a
+    // workspace-relative path when the file already lives under references/
+    // or assets/; otherwise fall back to the basename only.
+    const relative =
+      workspaceRoot !== undefined ? workspaceAttachmentRelativePath(file.path) : null;
+    const safePromptPath = relative ?? file.name;
+    if (relative !== null && workspaceRoot !== undefined) {
+      candidates.push({
+        readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, relative),
+        promptPath: relative,
+      });
     }
+    candidates.push({ readPath: file.path, promptPath: safePromptPath });
   }
 
   let lastError: unknown;
@@ -646,7 +683,9 @@ async function readAttachment(
     }
 
     if (!looksText) {
-      if (imageMimeType) {
+      // Read the full binary when the extension is a known image OR the probe
+      // looks like image bytes (clipboard pastes sometimes lack a useful name).
+      if (imageMimeType || sniffImageMimeType(probe) !== null) {
         const length = Math.max(
           1,
           Math.min(file.size || MAX_BINARY_ATTACHMENT_BYTES, maxFileBytes),
@@ -686,13 +725,14 @@ async function readAttachment(
   }
 
   if (!isProbablyText(buffer, extension)) {
-    if (imageMimeType) {
+    const resolvedImageMime = imageMimeType ?? sniffImageMimeType(buffer);
+    if (resolvedImageMime) {
       return {
         name: file.name,
         path: promptPath,
-        note: 'Image attachment metadata is available; visual pixels may only be available on vision-capable provider paths. If image content is unavailable, use the filename and user prompt as hints.',
-        mediaType: imageMimeType,
-        imageDataUrl: `data:${imageMimeType};base64,${buffer.toString('base64')}`,
+        note: 'Image bytes are embedded as multimodal content when the active model accepts image input; otherwise only the filename is available as a hint.',
+        mediaType: resolvedImageMime,
+        imageDataUrl: `data:${resolvedImageMime};base64,${buffer.toString('base64')}`,
       };
     }
     return {

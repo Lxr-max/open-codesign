@@ -131,6 +131,42 @@ describe('preparePromptContext', () => {
     // It fails because the file doesn't exist, but importantly - NOT ATTACHMENT_TOO_LARGE
   });
 
+  it('does not leak absolute host paths into attachment prompt paths', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-abs-image-'));
+    const filePath = path.join(dir, 'shot.png');
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    await fs.writeFile(filePath, pngBytes);
+
+    const result = await preparePromptContext({
+      attachments: [{ path: filePath, name: 'shot.png', size: pngBytes.length }],
+    });
+
+    expect(result.attachments[0]?.path).toBe('shot.png');
+    expect(result.attachments[0]?.path).not.toContain(dir);
+    expect(path.isAbsolute(result.attachments[0]?.path ?? '')).toBe(false);
+    expect(result.attachments[0]?.imageDataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('sniffs image bytes when the attachment name has no image extension', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-sniff-image-'));
+    const filePath = path.join(dir, 'clipboard-temp');
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    await fs.writeFile(filePath, pngBytes);
+
+    const result = await preparePromptContext({
+      attachments: [{ path: filePath, name: 'clipboard-temp', size: pngBytes.length }],
+    });
+
+    expect(result.attachments[0]).toMatchObject({
+      name: 'clipboard-temp',
+      path: 'clipboard-temp',
+      mediaType: 'image/png',
+    });
+    expect(result.attachments[0]?.imageDataUrl).toBe(
+      `data:image/png;base64,${pngBytes.toString('base64')}`,
+    );
+  });
+
   it('encodes supported image attachments as data URLs', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-image-attachment-'));
     const filePath = path.join(dir, 'shot.png');
@@ -149,8 +185,9 @@ describe('preparePromptContext', () => {
     expect(result.attachments[0]?.imageDataUrl).toBe(
       `data:image/png;base64,${pngBytes.toString('base64')}`,
     );
-    expect(result.attachments[0]?.note).toContain('visual pixels may only be available');
+    expect(result.attachments[0]?.note).toContain('embedded as multimodal content');
     expect(result.attachments[0]?.note).not.toContain('Use the visual content directly');
+    expect(result.attachments[0]?.path).toBe('shot.png');
     expect(result.attachments[0]?.excerpt).toBeUndefined();
   });
 

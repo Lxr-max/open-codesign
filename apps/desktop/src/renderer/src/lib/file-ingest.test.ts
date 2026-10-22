@@ -29,4 +29,21 @@ describe('file ingest helpers', () => {
       blobs: [{ name: 'image.png', mediaType: 'image/png', dataBase64: 'AQID' }],
     });
   });
+
+  it('ignores Windows clipboard File.path and still pastes as a blob', async () => {
+    const file = {
+      name: 'image.png',
+      size: 3,
+      type: 'image/png',
+      path: 'C:\\Users\\user\\AppData\\Local\\Temp\\ocrA1B2.png',
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    } as File & { path: string };
+    const clipboard = { files: [file] } as unknown as DataTransfer;
+    vi.stubGlobal('btoa', (input: string) => Buffer.from(input, 'binary').toString('base64'));
+
+    await expect(clipboardFilesToWorkspaceBlobs(clipboard)).resolves.toEqual({
+      files: [],
+      blobs: [{ name: 'image.png', mediaType: 'image/png', dataBase64: 'AQID' }],
+    });
+  });
 });

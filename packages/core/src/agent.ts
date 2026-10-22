@@ -264,6 +264,11 @@ function supportsImageInput(wire: WireApi | undefined, modelId: string): boolean
     lower.includes('vision') ||
     lower.includes('vl') ||
     lower.includes('multimodal') ||
+    lower.includes('llava') ||
+    lower.includes('pixtral') ||
+    lower.includes('minicpm') ||
+    lower.includes('gemma-3') ||
+    lower.includes('gemma3') ||
     lower.includes('gpt-4o') ||
     lower.includes('gpt-5') ||
     lower.includes('claude-3') ||
@@ -482,7 +487,9 @@ function isTextEditorView(params: unknown): boolean {
 }
 
 function imageDataUrlToContent(dataUrl: string): PiAiImageContent | null {
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(dataUrl.trim());
+  // Strip incidental whitespace some encoders insert into base64 payloads.
+  const normalized = dataUrl.trim().replace(/\s+/g, '');
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(normalized);
   if (match === null) return null;
   const mimeType = match[1];
   const data = match[2];
