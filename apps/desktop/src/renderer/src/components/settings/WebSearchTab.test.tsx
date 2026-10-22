@@ -151,6 +151,28 @@ describe('Tavily Settings UI', () => {
     expect(hooks.state[3]).toEqual({ key: 'settings.webSearch.saveFailed', error: true });
   });
 
+  it('surfaces KEYCHAIN_UNAVAILABLE when secure storage cannot store a key', async () => {
+    await mount();
+    hooks.state[1] = 'replacement-fixture';
+    vi.stubGlobal(
+      'FormData',
+      class {
+        get() {
+          return hooks.state[1];
+        }
+      },
+    );
+    api.save.mockRejectedValueOnce(
+      Object.assign(new Error('OS keychain unavailable'), { code: 'KEYCHAIN_UNAVAILABLE' }),
+    );
+    find(render(), (props) => props.onSubmit !== undefined).onSubmit?.({
+      preventDefault: vi.fn(),
+      currentTarget: {} as HTMLFormElement,
+    });
+    await Promise.resolve();
+    expect(hooks.state[3]).toEqual({ key: 'err.KEYCHAIN_UNAVAILABLE', error: true });
+  });
+
   it('requires confirmation before explicitly clearing the saved key', async () => {
     await mount();
     await button('settings.webSearch.clearKey').onClick?.();

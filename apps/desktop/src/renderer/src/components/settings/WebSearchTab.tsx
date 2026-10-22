@@ -1,11 +1,13 @@
 import { useT } from '@open-codesign/i18n';
 import {
+  ERROR_CODES,
   SaveWebSearchSettingsInput,
   WebSearchSettingsState,
   WebSearchTestResult,
 } from '@open-codesign/shared';
 import { ExternalLink, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { extractCodesignErrorCode } from '../../store/slices/errors';
 import { Row, SectionTitle } from './primitives';
 
 export const WEB_SEARCH_TEST_MESSAGES = {
@@ -76,8 +78,16 @@ export function WebSearchTab() {
       setNotice({
         key: input.clearKey ? 'settings.webSearch.cleared' : 'settings.webSearch.saved',
       });
-    } catch {
-      if (mounted.current) setNotice({ key: 'settings.webSearch.saveFailed', error: true });
+    } catch (err) {
+      if (!mounted.current) return;
+      const code = extractCodesignErrorCode(err);
+      setNotice({
+        key:
+          code === ERROR_CODES.KEYCHAIN_UNAVAILABLE
+            ? 'err.KEYCHAIN_UNAVAILABLE'
+            : 'settings.webSearch.saveFailed',
+        error: true,
+      });
     } finally {
       busyRef.current = false;
       if (mounted.current) setBusy(false);

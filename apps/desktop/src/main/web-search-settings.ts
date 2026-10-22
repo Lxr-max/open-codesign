@@ -62,7 +62,11 @@ export function saveWebSearchSettings(raw: unknown): Promise<WebSearchSettingsSt
       await writeConfig(next);
       setCachedConfig(next);
       return settingsState(next);
-    } catch {
+    } catch (err) {
+      // Preserve keychain failures so Settings can show the keyed KEYCHAIN_UNAVAILABLE copy.
+      if (err instanceof CodesignError && err.code === ERROR_CODES.KEYCHAIN_UNAVAILABLE) {
+        throw err;
+      }
       // OS encryption and persistence errors must not expose the key or payload.
       throw new CodesignError('Could not save web search settings.', 'WEB_SEARCH_SAVE_FAILED');
     }
