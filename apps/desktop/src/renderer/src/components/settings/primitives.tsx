@@ -1,5 +1,6 @@
 import { getCurrentLocale, useT } from '@open-codesign/i18n';
 import {
+  CHATGPT_CODEX_PROVIDER_ID,
   connectionTestProbesModelsEndpoint,
   type ErrorCode,
   localModelsForDiscoveryMode,
@@ -534,7 +535,10 @@ export function RowModelSelector({
   const provider = row.provider;
   const isActive = row.isActive;
   const discoveryMode = row.modelDiscoveryMode;
-  const fetchRemote = usesRemoteModelsListing(discoveryMode);
+  // ChatGPT Codex is static-hint for discovery mode, but still needs the
+  // maintained local/pi catalog from listForProvider (#508).
+  const fetchRemote =
+    usesRemoteModelsListing(discoveryMode) || provider === CHATGPT_CODEX_PROVIDER_ID;
 
   const initial = isActive
     ? (config.modelPrimary ?? row.defaultModel ?? '')
@@ -692,7 +696,38 @@ export function RowModelSelector({
     <div className="mt-[var(--space-2)] space-y-1">
       <div className="flex items-center gap-[var(--space-2)] text-[var(--text-xs)] text-[var(--color-text-muted)]">
         <Cpu className="w-3 h-3 shrink-0" />
-        {picker === 'loading' ? (
+        {provider === CHATGPT_CODEX_PROVIDER_ID ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const next = new FormData(event.currentTarget).get('model');
+              if (typeof next === 'string' && next.trim() && next.trim() !== primary)
+                handleChange(next.trim());
+            }}
+          >
+            <input
+              key={primary}
+              name="model"
+              defaultValue={primary}
+              required
+              list={`chatgpt-models-${provider}`}
+              aria-label={t('settings.providers.chatgptLogin.modelLabel')}
+              className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[var(--color-text-primary)]"
+            />
+            <datalist id={`chatgpt-models-${provider}`}>
+              {models?.map((model) => (
+                <option key={model} value={model} />
+              ))}
+            </datalist>
+            <button
+              type="submit"
+              className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)]"
+            >
+              {t('common.save')}
+            </button>
+          </form>
+        ) : picker === 'loading' ? (
           <span className="inline-flex items-center gap-1 h-6 px-2 text-[var(--text-xs)]">
             <Loader2 className="w-3 h-3 animate-spin" />
           </span>
@@ -731,6 +766,11 @@ export function RowModelSelector({
           />
         )}
       </div>
+      {provider === CHATGPT_CODEX_PROVIDER_ID && (
+        <p className="mt-[var(--space-1)] text-[var(--text-xs)] leading-5 text-[var(--color-text-muted)]">
+          {t('settings.providers.chatgptLogin.modelHelp')}
+        </p>
+      )}
       {hintKey !== null && (
         <p className="pl-5 text-[var(--text-xs)] text-[var(--color-text-muted)]">{t(hintKey)}</p>
       )}
