@@ -406,10 +406,26 @@ export function AddCustomProviderModal({
           }
         }
         if (discoveryTouched.current) {
-          update.modelDiscoveryMode = discoveryModeForCustomProvider({
+          const nextMode = discoveryModeForCustomProvider({
             discoveryKind: discovery.kind,
             manualModel,
           });
+          // A failed best-effort /models probe must not silently downgrade an
+          // existing models-mode provider when the endpoint itself did not
+          // change (e.g. Edit + TLS/keyless toggle while offline).
+          const endpointUnchanged =
+            editTarget.lockEndpoint ||
+            (wire === editTarget.wire &&
+              canonicalBaseUrl(baseUrl.trim(), wire) ===
+                canonicalBaseUrl(editTarget.baseUrl, editTarget.wire));
+          const preserveModelsOnFailedProbe =
+            discovery.kind === 'failed' &&
+            !manualModel &&
+            editTarget.modelDiscoveryMode === 'models' &&
+            endpointUnchanged;
+          if (!preserveModelsOnFailedProbe) {
+            update.modelDiscoveryMode = nextMode;
+          }
         }
         await window.codesign.config.updateProvider(update);
       } else {
