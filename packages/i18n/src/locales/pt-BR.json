@@ -640,7 +640,7 @@
       "systemNotifications": "Notificações do sistema",
       "systemNotificationsHint": "Avisar quando um design terminar, falhar ou fizer uma pergunta enquanto o Open CoDesign estiver em segundo plano. No macOS, os avisos param depois que você fecha a última janela, até abri-la de novo.",
       "timeout": "Tempo limite de geração",
-      "timeoutHint": "Segundos antes de uma geração ser abortada.",
+      "timeoutHint": "Segundos antes de uma geração ser abortada. Escolha Sem limite para execuções locais noturnas.",
       "timeoutSeconds": "{{value}} s",
       "proxy": "Proxy HTTP",
       "proxyHint": "Encaminha o tráfego de rede e as chamadas à API do LLM por este proxy (ex.: http://127.0.0.1:7890). Deixe em branco para desativar. Aplicado imediatamente, sem reinício.",
@@ -649,7 +649,8 @@
       "toggleDevtools": "Alternar DevTools",
       "prefsLoadFailed": "Falha ao carregar preferências",
       "prefsSaveFailed": "Falha ao salvar preferência",
-      "devtoolsFailed": "Não foi possível alternar o DevTools"
+      "devtoolsFailed": "Não foi possível alternar o DevTools",
+      "timeoutDisabled": "Sem limite"
     }
   },
   "updates": {

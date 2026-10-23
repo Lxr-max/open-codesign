@@ -822,7 +822,7 @@
       "systemNotifications": "系统通知",
       "systemNotificationsHint": "Open CoDesign 在后台时，设计完成、生成失败或需要你回答问题时发送系统通知。在 macOS 上关闭最后一个窗口后不再通知，重新打开窗口后恢复。",
       "timeout": "生成超时",
-      "timeoutHint": "超过该秒数后会中止生成请求。",
+      "timeoutHint": "生成请求在超时后会被中止。选择「无超时」可跑过夜本地模型。",
       "timeoutSeconds": "{{value}} 秒",
       "proxy": "HTTP 代理",
       "proxyHint": "将出站网络与 LLM API 请求通过此代理转发（例如 http://127.0.0.1:7890）。留空表示禁用。即时生效，无需重启。",
@@ -831,7 +831,8 @@
       "toggleDevtools": "切换 DevTools",
       "prefsLoadFailed": "加载偏好设置失败",
       "prefsSaveFailed": "保存偏好失败",
-      "devtoolsFailed": "无法切换 DevTools"
+      "devtoolsFailed": "无法切换 DevTools",
+      "timeoutDisabled": "无超时"
     }
   },
   "updates": {
