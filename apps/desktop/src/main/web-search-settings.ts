@@ -4,6 +4,7 @@ import {
   ERROR_CODES,
   hydrateConfig,
   SaveWebSearchSettingsInput,
+  type SaveWebSearchSettingsResult,
   toPersistedV3,
   type WebSearchSettingsState,
   type WebSearchTestResult,
@@ -73,6 +74,22 @@ export function saveWebSearchSettings(raw: unknown): Promise<WebSearchSettingsSt
   });
   pendingSave = save.catch(() => undefined);
   return save;
+}
+
+export async function saveWebSearchSettingsForIpc(
+  raw: unknown,
+): Promise<SaveWebSearchSettingsResult> {
+  try {
+    return { ok: true, settings: await saveWebSearchSettings(raw) };
+  } catch (err) {
+    // Only allow fixed error codes across the bridge, never credential-bearing messages/causes.
+    const code =
+      err instanceof CodesignError &&
+      (err.code === ERROR_CODES.KEYCHAIN_UNAVAILABLE || err.code === ERROR_CODES.IPC_BAD_INPUT)
+        ? err.code
+        : 'WEB_SEARCH_SAVE_FAILED';
+    return { ok: false, code };
+  }
 }
 
 export async function testWebSearchSettings(): Promise<WebSearchTestResult> {

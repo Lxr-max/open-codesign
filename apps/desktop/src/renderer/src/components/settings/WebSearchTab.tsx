@@ -7,7 +7,6 @@ import {
 } from '@open-codesign/shared';
 import { ExternalLink, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { extractCodesignErrorCode } from '../../store/slices/errors';
 import { Row, SectionTitle } from './primitives';
 
 export const WEB_SEARCH_TEST_MESSAGES = {
@@ -72,22 +71,24 @@ export function WebSearchTab() {
     try {
       const bridge = window.codesign?.webSearch;
       if (!bridge) throw new Error('Unavailable');
-      const next = WebSearchSettingsState.parse(await bridge.save(parsed.data));
+      const result = await bridge.save(parsed.data);
       if (!mounted.current) return;
-      setSettings(next);
+      if (!result.ok) {
+        setNotice({
+          key:
+            result.code === ERROR_CODES.KEYCHAIN_UNAVAILABLE
+              ? 'err.KEYCHAIN_UNAVAILABLE'
+              : 'settings.webSearch.saveFailed',
+          error: true,
+        });
+        return;
+      }
+      setSettings(WebSearchSettingsState.parse(result.settings));
       setNotice({
         key: input.clearKey ? 'settings.webSearch.cleared' : 'settings.webSearch.saved',
       });
-    } catch (err) {
-      if (!mounted.current) return;
-      const code = extractCodesignErrorCode(err);
-      setNotice({
-        key:
-          code === ERROR_CODES.KEYCHAIN_UNAVAILABLE
-            ? 'err.KEYCHAIN_UNAVAILABLE'
-            : 'settings.webSearch.saveFailed',
-        error: true,
-      });
+    } catch {
+      if (mounted.current) setNotice({ key: 'settings.webSearch.saveFailed', error: true });
     } finally {
       busyRef.current = false;
       if (mounted.current) setBusy(false);

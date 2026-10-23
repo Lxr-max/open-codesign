@@ -84,7 +84,7 @@ beforeEach(() => {
   hooks.effects = [];
   vi.resetAllMocks();
   api.get.mockResolvedValue({ enabled: false, hasKey: true });
-  api.save.mockResolvedValue({ enabled: false, hasKey: true });
+  api.save.mockResolvedValue({ ok: true, settings: { enabled: false, hasKey: true } });
   api.test.mockResolvedValue({ status: 'ok' });
   vi.stubGlobal('window', { codesign: { webSearch: api, openExternal } });
 });
@@ -162,9 +162,7 @@ describe('Tavily Settings UI', () => {
         }
       },
     );
-    api.save.mockRejectedValueOnce(
-      Object.assign(new Error('OS keychain unavailable'), { code: 'KEYCHAIN_UNAVAILABLE' }),
-    );
+    api.save.mockResolvedValueOnce(structuredClone({ ok: false, code: 'KEYCHAIN_UNAVAILABLE' }));
     find(render(), (props) => props.onSubmit !== undefined).onSubmit?.({
       preventDefault: vi.fn(),
       currentTarget: {} as HTMLFormElement,
