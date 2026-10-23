@@ -2,6 +2,8 @@ import type { WorkspaceImportBlobInput, WorkspaceImportFileInput } from '../../.
 
 type FileWithPath = File & { path?: string };
 
+const MAX_CLIPBOARD_IMAGE_BLOB_BYTES = 10_000_000;
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -26,7 +28,7 @@ export function dataTransferFilesToWorkspaceFiles(
 }
 
 /**
- * Read clipboard image bytes before temporary files disappear. Ordinary files
+ * Read small clipboard image bytes before temporary files disappear. Larger files
  * keep the main-process copy path so large documents do not load in the renderer.
  */
 export async function clipboardFilesToWorkspaceBlobs(
@@ -51,6 +53,7 @@ async function filesToWorkspaceImport(
     const localPath = (file as FileWithPath).path;
     const preferImageBlob =
       opts.preferBlob === true &&
+      file.size <= MAX_CLIPBOARD_IMAGE_BLOB_BYTES &&
       (file.type?.startsWith('image/') ||
         /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(file.name));
     if (!preferImageBlob && typeof localPath === 'string' && localPath.length > 0) {

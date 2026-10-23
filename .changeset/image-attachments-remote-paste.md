@@ -2,4 +2,4 @@
 "@open-codesign/desktop": patch
 ---
 
-Read pasted clipboard files as bytes, detect image MIME types from their contents, and use workspace-relative names in attachment prompts.
+Preserve pasted image MIME types, bound renderer reads to small clipboard images, and use workspace-relative attachment prompt names without changing explicit source-file precedence.

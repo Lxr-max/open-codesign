@@ -42,6 +42,23 @@ describe('file ingest helpers', () => {
     });
   });
 
+  it('keeps large clipboard image files on the main-process copy path', async () => {
+    const arrayBuffer = vi.fn();
+    const file = {
+      name: 'render.png',
+      size: 100_000_000,
+      type: 'image/png',
+      path: 'D:\\render.png',
+      arrayBuffer,
+    } as unknown as File & { path: string };
+    const clipboard = { files: [file] } as unknown as DataTransfer;
+    await expect(clipboardFilesToWorkspaceBlobs(clipboard)).resolves.toEqual({
+      files: [{ path: 'D:\\render.png', name: 'render.png', size: 100_000_000 }],
+      blobs: [],
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
   it('keeps ordinary clipboard files on the main-process copy path', async () => {
     const arrayBuffer = vi.fn();
     const file = {
