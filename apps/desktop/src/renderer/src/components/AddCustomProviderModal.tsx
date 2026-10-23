@@ -353,6 +353,7 @@ export function AddCustomProviderModal({
       if (res.ok) {
         setTest({ kind: 'ok', modelCount: res.modelCount });
         if (res.models.length > 0) {
+          discoveryTouched.current = true;
           setDiscovery({ kind: 'found', models: res.models });
           if (!userPickedModel.current && defaultModel.trim().length === 0) {
             setDefaultModel(pickBestModel(res.models));
@@ -705,7 +706,10 @@ export function AddCustomProviderModal({
               {manualModel && discovery.kind === 'found' && discovery.models.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setManualModel(false)}
+                  onClick={() => {
+                    discoveryTouched.current = true;
+                    setManualModel(false);
+                  }}
                   className="shrink-0 text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] underline"
                 >
                   {t('settings.providers.custom.switchToDropdown')}
