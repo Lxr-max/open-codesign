@@ -11,6 +11,7 @@ export {
   CommentContentExpectations,
   commentContentFingerprint,
 } from './comment-content';
+export type { SaveWebSearchSettingsResult } from './web-search-settings';
 export {
   SaveWebSearchSettingsInput,
   WEB_SEARCH_SETTINGS_CHANNELS,

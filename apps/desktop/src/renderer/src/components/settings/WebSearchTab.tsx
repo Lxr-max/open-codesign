@@ -1,5 +1,6 @@
 import { useT } from '@open-codesign/i18n';
 import {
+  ERROR_CODES,
   SaveWebSearchSettingsInput,
   WebSearchSettingsState,
   WebSearchTestResult,
@@ -70,9 +71,19 @@ export function WebSearchTab() {
     try {
       const bridge = window.codesign?.webSearch;
       if (!bridge) throw new Error('Unavailable');
-      const next = WebSearchSettingsState.parse(await bridge.save(parsed.data));
+      const result = await bridge.save(parsed.data);
       if (!mounted.current) return;
-      setSettings(next);
+      if (!result.ok) {
+        setNotice({
+          key:
+            result.code === ERROR_CODES.KEYCHAIN_UNAVAILABLE
+              ? 'err.KEYCHAIN_UNAVAILABLE'
+              : 'settings.webSearch.saveFailed',
+          error: true,
+        });
+        return;
+      }
+      setSettings(WebSearchSettingsState.parse(result.settings));
       setNotice({
         key: input.clearKey ? 'settings.webSearch.cleared' : 'settings.webSearch.saved',
       });

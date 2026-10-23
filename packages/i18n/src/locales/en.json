@@ -830,7 +830,7 @@
       "systemNotifications": "System notifications",
       "systemNotificationsHint": "Notify me when a design finishes, fails, or asks a question while Open CoDesign is in the background. On macOS, notifications stop after you close the last window, until you open it again.",
       "timeout": "Generation timeout",
-      "timeoutHint": "Seconds before a generation request is aborted.",
+      "timeoutHint": "Seconds before a generation request is aborted. Choose No timeout for overnight local-model runs.",
       "timeoutSeconds": "{{value}} s",
       "proxy": "HTTP proxy",
       "proxyHint": "Route outbound network and LLM API requests through this proxy (e.g., http://127.0.0.1:7890). Leave blank to disable. Applied immediately — no restart needed.",
@@ -839,7 +839,8 @@
       "toggleDevtools": "Toggle DevTools",
       "prefsLoadFailed": "Failed to load preferences",
       "prefsSaveFailed": "Failed to save preference",
-      "devtoolsFailed": "Could not toggle DevTools"
+      "devtoolsFailed": "Could not toggle DevTools",
+      "timeoutDisabled": "No timeout"
     }
   },
   "updates": {

@@ -84,7 +84,7 @@ beforeEach(() => {
   hooks.effects = [];
   vi.resetAllMocks();
   api.get.mockResolvedValue({ enabled: false, hasKey: true });
-  api.save.mockResolvedValue({ enabled: false, hasKey: true });
+  api.save.mockResolvedValue({ ok: true, settings: { enabled: false, hasKey: true } });
   api.test.mockResolvedValue({ status: 'ok' });
   vi.stubGlobal('window', { codesign: { webSearch: api, openExternal } });
 });
@@ -149,6 +149,26 @@ describe('Tavily Settings UI', () => {
     expect(api.save).toHaveBeenCalledExactlyOnceWith({ apiKey: 'replacement-fixture' });
     expect(hooks.state[1]).toBe('');
     expect(hooks.state[3]).toEqual({ key: 'settings.webSearch.saveFailed', error: true });
+  });
+
+  it('surfaces KEYCHAIN_UNAVAILABLE when secure storage cannot store a key', async () => {
+    await mount();
+    hooks.state[1] = 'replacement-fixture';
+    vi.stubGlobal(
+      'FormData',
+      class {
+        get() {
+          return hooks.state[1];
+        }
+      },
+    );
+    api.save.mockResolvedValueOnce(structuredClone({ ok: false, code: 'KEYCHAIN_UNAVAILABLE' }));
+    find(render(), (props) => props.onSubmit !== undefined).onSubmit?.({
+      preventDefault: vi.fn(),
+      currentTarget: {} as HTMLFormElement,
+    });
+    await Promise.resolve();
+    expect(hooks.state[3]).toEqual({ key: 'err.KEYCHAIN_UNAVAILABLE', error: true });
   });
 
   it('requires confirmation before explicitly clearing the saved key', async () => {

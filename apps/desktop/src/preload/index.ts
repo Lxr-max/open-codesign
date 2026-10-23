@@ -28,6 +28,7 @@ import type {
   ReportEventResult,
   ResourceStateV1,
   SaveWebSearchSettingsInput,
+  SaveWebSearchSettingsResult,
   SelectedElement,
   SnapshotCreateInput,
   SourceEditApplyRequestV1,
@@ -679,7 +680,10 @@ const api = {
   webSearch: {
     get: () => ipcRenderer.invoke('settings:v1:get-web-search') as Promise<WebSearchSettingsState>,
     save: (input: SaveWebSearchSettingsInput) =>
-      ipcRenderer.invoke('settings:v1:save-web-search', input) as Promise<WebSearchSettingsState>,
+      ipcRenderer.invoke(
+        'settings:v1:save-web-search',
+        input,
+      ) as Promise<SaveWebSearchSettingsResult>,
     test: () => ipcRenderer.invoke('settings:v1:test-web-search') as Promise<WebSearchTestResult>,
   },
   memory: {
