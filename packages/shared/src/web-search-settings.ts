@@ -23,6 +23,11 @@ export const SaveWebSearchSettingsInput = z
   });
 export type SaveWebSearchSettingsInput = z.infer<typeof SaveWebSearchSettingsInput>;
 
+/** Plain results preserve error codes through both Electron IPC and contextBridge. */
+export type SaveWebSearchSettingsResult =
+  | { ok: true; settings: WebSearchSettingsState }
+  | { ok: false; code: 'KEYCHAIN_UNAVAILABLE' | 'IPC_BAD_INPUT' | 'WEB_SEARCH_SAVE_FAILED' };
+
 export const WebSearchTestResult = z
   .object({
     status: z.enum([
