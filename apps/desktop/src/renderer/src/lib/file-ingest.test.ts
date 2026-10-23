@@ -30,6 +30,35 @@ describe('file ingest helpers', () => {
     });
   });
 
+  it.each([
+    'image/jpeg',
+    'image/webp',
+  ])('preserves unnamed %s clipboard files for MIME-based naming', async (mediaType) => {
+    const file = new File([new Uint8Array([1, 2, 3])], '', { type: mediaType });
+    const clipboard = { files: [file] } as unknown as DataTransfer;
+    await expect(clipboardFilesToWorkspaceBlobs(clipboard)).resolves.toEqual({
+      files: [],
+      blobs: [{ name: '', mediaType, dataBase64: 'AQID' }],
+    });
+  });
+
+  it('keeps ordinary clipboard files on the main-process copy path', async () => {
+    const arrayBuffer = vi.fn();
+    const file = {
+      name: 'brief.pdf',
+      size: 100_000_000,
+      type: 'application/pdf',
+      path: 'D:\\brief.pdf',
+      arrayBuffer,
+    } as unknown as File & { path: string };
+    const clipboard = { files: [file] } as unknown as DataTransfer;
+    await expect(clipboardFilesToWorkspaceBlobs(clipboard)).resolves.toEqual({
+      files: [{ path: 'D:\\brief.pdf', name: 'brief.pdf', size: 100_000_000 }],
+      blobs: [],
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
   it('ignores Windows clipboard File.path and still pastes as a blob', async () => {
     const file = {
       name: 'image.png',

@@ -3,7 +3,7 @@ import { open, readFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { extname, isAbsolute } from 'node:path';
+import { extname, isAbsolute, relative as relativePath, sep } from 'node:path';
 import type { AttachmentContext, ProjectContext, ReferenceUrlContext } from '@open-codesign/core';
 import {
   CodesignError,
@@ -59,7 +59,11 @@ function sniffImageMimeType(buffer: Buffer): string | null {
     buffer[0] === 0x89 &&
     buffer[1] === 0x50 &&
     buffer[2] === 0x4e &&
-    buffer[3] === 0x47
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
   ) {
     return 'image/png';
   }
@@ -523,21 +527,27 @@ async function openAttachment(
       candidates.push({ readPath: file.path, promptPath: file.path });
     }
   } else {
-    // Absolute host paths (Windows clipboard temp files, picker results before
-    // import, etc.) must not leak into the model-facing promptPath: a remote
-    // OpenServer on Linux cannot open C:\\Users\\... (#415). Prefer a
-    // workspace-relative path when the file already lives under references/
-    // or assets/; otherwise fall back to the basename only.
-    const relative =
-      workspaceRoot !== undefined ? workspaceAttachmentRelativePath(file.path) : null;
-    const safePromptPath = relative ?? file.name;
-    if (relative !== null && workspaceRoot !== undefined) {
-      candidates.push({
-        readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, relative),
-        promptPath: relative,
-      });
+    const relative = workspaceRoot === undefined ? null : relativePath(workspaceRoot, file.path);
+    const ownedPromptPath =
+      relative !== null &&
+      relative.length > 0 &&
+      relative !== '..' &&
+      !relative.startsWith(`..${sep}`) &&
+      !isAbsolute(relative)
+        ? normalizePromptPath(relative)
+        : file.name;
+    // An explicit existing attachment wins over a same-named workspace file.
+    // Keep host paths out of prompt text without changing which bytes are read.
+    candidates.push({ readPath: file.path, promptPath: ownedPromptPath });
+    if (workspaceRoot !== undefined) {
+      const rebasedPath = workspaceAttachmentRelativePath(file.path);
+      if (rebasedPath !== null) {
+        candidates.push({
+          readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, rebasedPath),
+          promptPath: rebasedPath,
+        });
+      }
     }
-    candidates.push({ readPath: file.path, promptPath: safePromptPath });
   }
 
   let lastError: unknown;
@@ -725,7 +735,7 @@ async function readAttachment(
   }
 
   if (!isProbablyText(buffer, extension)) {
-    const resolvedImageMime = imageMimeType ?? sniffImageMimeType(buffer);
+    const resolvedImageMime = sniffImageMimeType(buffer) ?? imageMimeType;
     if (resolvedImageMime) {
       return {
         name: file.name,

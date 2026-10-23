@@ -26,9 +26,8 @@ export function dataTransferFilesToWorkspaceFiles(
 }
 
 /**
- * Clipboard screenshots on Windows Electron often expose a transient `File.path`
- * under %TEMP%. Prefer reading bytes as blobs so import lands in the workspace
- * and remote OpenServer sessions never see a host-local path (#415).
+ * Read clipboard image bytes before temporary files disappear. Ordinary files
+ * keep the main-process copy path so large documents do not load in the renderer.
  */
 export async function clipboardFilesToWorkspaceBlobs(
   dataTransfer: DataTransfer,
@@ -50,12 +49,17 @@ async function filesToWorkspaceImport(
   const blobs: WorkspaceImportBlobInput[] = [];
   for (const file of sourceFiles) {
     const localPath = (file as FileWithPath).path;
-    if (opts.preferBlob !== true && typeof localPath === 'string' && localPath.length > 0) {
+    const preferImageBlob =
+      opts.preferBlob === true &&
+      (file.type?.startsWith('image/') ||
+        /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(file.name));
+    if (!preferImageBlob && typeof localPath === 'string' && localPath.length > 0) {
       files.push({ path: localPath, name: file.name, size: file.size });
       continue;
     }
     blobs.push({
-      name: file.name || 'pasted-image.png',
+      // Preserve an empty name so the importer can choose the extension from mediaType.
+      name: file.name,
       mediaType: file.type || 'application/octet-stream',
       dataBase64: arrayBufferToBase64(await file.arrayBuffer()),
     });

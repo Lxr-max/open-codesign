@@ -147,6 +147,35 @@ describe('preparePromptContext', () => {
     expect(result.attachments[0]?.imageDataUrl).toMatch(/^data:image\/png;base64,/);
   });
 
+  it('reads an explicit attachment before a different same-named workspace image', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-image-source-'));
+    const workspaceRoot = path.join(dir, 'workspace');
+    const external = path.join(dir, 'external', 'references', 'shot.png');
+    const workspaceImage = path.join(workspaceRoot, 'references', 'shot.png');
+    const original = Buffer.from('89504e470d0a1a0a00', 'hex');
+    try {
+      await fs.mkdir(path.dirname(external), { recursive: true });
+      await fs.mkdir(path.dirname(workspaceImage), { recursive: true });
+      await fs.writeFile(external, original);
+      await fs.writeFile(workspaceImage, Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+      const result = await preparePromptContext({
+        workspaceRoot,
+        attachments: [{ path: external, name: 'shot.png', size: original.length }],
+      });
+      expect(result.attachments[0]).toMatchObject({
+        path: 'shot.png',
+        imageDataUrl: `data:image/png;base64,${original.toString('base64')}`,
+      });
+      const owned = await preparePromptContext({
+        workspaceRoot,
+        attachments: [{ path: workspaceImage, name: 'shot.png', size: 4 }],
+      });
+      expect(owned.attachments[0]?.path).toBe('references/shot.png');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('sniffs image bytes when the attachment name has no image extension', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-sniff-image-'));
     const filePath = path.join(dir, 'clipboard-temp');
@@ -165,6 +194,26 @@ describe('preparePromptContext', () => {
     expect(result.attachments[0]?.imageDataUrl).toBe(
       `data:image/png;base64,${pngBytes.toString('base64')}`,
     );
+  });
+
+  it.each([
+    ['image/jpeg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00])],
+    ['image/webp', Buffer.from('524946460400000057454250', 'hex')],
+  ])('uses the detected %s MIME type even when the filename ends in .png', async (mediaType, bytes) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesign-mislabeled-image-'));
+    try {
+      const filePath = path.join(dir, 'clipboard.png');
+      await fs.writeFile(filePath, bytes);
+      const result = await preparePromptContext({
+        attachments: [{ path: filePath, name: 'clipboard.png', size: bytes.length }],
+      });
+      expect(result.attachments[0]).toMatchObject({
+        mediaType,
+        imageDataUrl: `data:${mediaType};base64,${bytes.toString('base64')}`,
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('encodes supported image attachments as data URLs', async () => {
@@ -601,7 +650,7 @@ describe('document attachments', () => {
     const { attachments } = await preparePromptContext({ attachments: [file] });
     expect(attachments[0]).toEqual({
       name: 'brief.docx',
-      path: file.path,
+      path: 'brief.docx',
       excerpt: 'Title: Pricing brief\n\nRedesign the pricing page\nKeep it calm & clear',
       note: 'Text extracted from a DOCX file; layout, images and charts are not included.',
     });
@@ -728,7 +777,7 @@ describe('document attachments', () => {
     const { attachments } = await preparePromptContext({ attachments: [file] });
     expect(attachments[0]).toEqual({
       name: 'empty.docx',
-      path: file.path,
+      path: 'empty.docx',
       note: 'DOCX file with no text in it.',
     });
   });
