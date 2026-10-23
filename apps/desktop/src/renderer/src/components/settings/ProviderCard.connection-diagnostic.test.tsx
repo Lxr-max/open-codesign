@@ -25,6 +25,7 @@ const row: ProviderRow = {
   maskedKey: '',
   baseUrl: 'https://relay.example.com',
   isActive: false,
+  label: 'Gateway',
   name: 'Gateway',
   builtin: false,
   wire: 'openai-chat',
@@ -94,7 +95,7 @@ describe('ProviderCard connection diagnostics', () => {
     const attemptedUrl = 'https://relay.example.com/v1/chat/completions';
     testProvider.mockResolvedValue({
       ok: false,
-      code: '403',
+      code: '401',
       message: 'HTTP 403',
       hint: 'Access denied',
       attemptedUrl,
