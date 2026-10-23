@@ -184,9 +184,7 @@ describe('resolveTimeoutOptions', () => {
   it("merges a stored value that is not in the canonical list and keeps the list sorted so the select shows the user's existing choice instead of silently downgrading on save", () => {
     const options = resolveTimeoutOptions(900);
     expect(options).toContain(900);
-    expect(options).toEqual(
-      [...options].sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b)),
-    );
+    expect(options).toEqual([...options].sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b)));
     // Canonical entries are preserved.
     for (const sec of TIMEOUT_OPTION_SECONDS) {
       expect(options).toContain(sec);

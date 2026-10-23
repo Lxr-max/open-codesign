@@ -517,5 +517,4 @@ describe('applyProxyConfig()', () => {
     );
     await expect(readPersisted()).resolves.toMatchObject({ generationTimeoutSec: 0 });
   });
-
 });
