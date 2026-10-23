@@ -107,7 +107,9 @@ describe('Windows storage path guards', () => {
     if (process.platform !== 'win32') return;
     const root = await tempRoot();
     initStorageSettings(root);
-    await expect(writeStorageLocations(patchForStorageKind('config', 'D:\\'))).rejects.toMatchObject({
+    await expect(
+      writeStorageLocations(patchForStorageKind('config', 'D:\\')),
+    ).rejects.toMatchObject({
       code: ERROR_CODES.STORAGE_SETTINGS_INVALID,
     });
     await expect(writeStorageLocations(patchForStorageKind('config', 'D:'))).rejects.toMatchObject({
