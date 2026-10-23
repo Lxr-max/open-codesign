@@ -1379,9 +1379,7 @@ describe('runProviderTest discovery modes (issue #210)', () => {
       expect(res.ok).toBe(false);
       if (!res.ok) {
         expect(res.code).toBe('404');
-        expect(res.attemptedUrl).toBe(
-          'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-        );
+        expect(res.attemptedUrl).toBe('https://open.bigmodel.cn/api/paas/v4/chat/completions');
       }
     } finally {
       restore();
