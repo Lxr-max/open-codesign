@@ -4,9 +4,11 @@ import {
   appendSessionActiveMessage,
   appendSessionChatMessage,
   appendSessionToolStatus,
+  findSessionToolCall,
   listSessionActiveMessages,
   listSessionChatMessages,
   type SessionChatStoreOptions,
+  sessionHasRunEventKey,
 } from './session-chat';
 
 function payload(row: ChatMessageRow): Record<string, unknown> {
@@ -38,11 +40,10 @@ export function projectRunEventToChat(
     )
   )
     return;
-  const rows = listSessionChatMessages(opts, event.designId);
   const key = `${event.generationId}:${event.seq}`;
   const append = (kind: ChatAppendInput['kind'], data: Record<string, unknown>, suffix = '') => {
     const eventKey = key + suffix;
-    if (rows.some((row) => payload(row)['runEventKey'] === eventKey)) return;
+    if (sessionHasRunEventKey(opts, event.designId, eventKey)) return;
     appendSessionChatMessage(opts, {
       designId: event.designId,
       kind,
@@ -65,12 +66,7 @@ export function projectRunEventToChat(
       ...(event.message ? { error: { message: event.message } } : {}),
     });
   } else if (event.type === 'tool_call_result') {
-    const row = rows.find(
-      (row) =>
-        row.kind === 'tool_call' &&
-        payload(row)['runId'] === event.generationId &&
-        payload(row)['toolCallId'] === event.toolCallId,
-    );
+    const row = findSessionToolCall(opts, event.designId, event.generationId, event.toolCallId);
     if (row) {
       const appliedKey = payload(row)['runResultEventKey'];
       const prefix = `${event.generationId}:`;
@@ -92,6 +88,7 @@ export function projectRunEventToChat(
   } else if (event.type === 'error') {
     append('error', { message: event.message ?? 'Unknown error', code: event.code });
   } else if (event.type === 'run_settled') {
+    const rows = listSessionChatMessages(opts, event.designId);
     for (const row of rows) {
       if (
         row.kind !== 'tool_call' ||

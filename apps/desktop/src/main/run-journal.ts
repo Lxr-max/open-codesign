@@ -25,10 +25,20 @@ interface RunUsage {
 interface RunState extends RunJournalStart {
   seq: number;
   bytes: number;
+  /** Bytes written since the last durability flush. */
+  unflushed: number;
   settled: boolean;
   writeError?: Error;
   usage?: RunUsage;
 }
+
+/** Tool events share one flush at the next turn or size boundary instead of fsyncing each line. */
+const JOURNAL_FLUSH_BYTES = 1024 * 1024;
+const DURABLE_JOURNAL_EVENTS = new Set<AgentStreamEvent['type']>([
+  'turn_end',
+  'run_settled',
+  'error',
+]);
 
 const EVENT_TYPES = new Set<AgentStreamEvent['type']>([
   'turn_start',
@@ -122,6 +132,12 @@ export class RunJournal {
   private readonly runs = new Map<string, RunState>();
   private initialization: Promise<void> | undefined;
   private tail: Promise<void> = Promise.resolve();
+  private flushes = 0;
+
+  /** Durability flushes performed by this journal, including the run header. */
+  flushesPerformed(): number {
+    return this.flushes;
+  }
 
   constructor(directory: string) {
     this.directory = path.resolve(directory);
@@ -138,10 +154,17 @@ export class RunJournal {
       try {
         await handle.writeFile(bytes);
         await handle.sync();
+        this.flushes += 1;
       } finally {
         await handle.close();
       }
-      this.runs.set(start.runId, { ...start, seq: 0, bytes: bytes.length, settled: false });
+      this.runs.set(start.runId, {
+        ...start,
+        seq: 0,
+        bytes: bytes.length,
+        unflushed: 0,
+        settled: false,
+      });
     });
   }
 
@@ -306,8 +329,25 @@ export class RunJournal {
       const handle = await open(this.filePath(run.runId), constants.O_WRONLY | constants.O_APPEND);
       try {
         if ((await handle.stat()).size !== run.bytes) throw invalid('journal size changed');
-        await handle.writeFile(bytes);
-        await handle.sync();
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesWritten } = await handle.write(
+            bytes,
+            offset,
+            bytes.length - offset,
+            run.bytes + offset,
+          );
+          if (bytesWritten <= 0) throw invalid('short journal write');
+          offset += bytesWritten;
+        }
+        const unflushed = run.unflushed + bytes.length;
+        if (DURABLE_JOURNAL_EVENTS.has(event.type) || unflushed >= JOURNAL_FLUSH_BYTES) {
+          await handle.sync();
+          this.flushes += 1;
+          run.unflushed = 0;
+        } else {
+          run.unflushed = unflushed;
+        }
       } finally {
         await handle.close();
       }
@@ -358,7 +398,7 @@ export class RunJournal {
             };
             validateStart(start);
             if (start.runId !== runId) throw invalid('run identifier differs from filename');
-            run = { ...start, seq: 0, bytes: 0, settled: false };
+            run = { ...start, seq: 0, bytes: 0, unflushed: 0, settled: false };
           } else {
             const event = validateEvent(record, run, run.seq + 1);
             run.seq = event.seq;

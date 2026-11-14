@@ -1,4 +1,13 @@
-import { appendFile, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -324,6 +333,52 @@ describe('RunJournal', () => {
     expect((await new RunJournal(directory).recover({})).events).toEqual([
       expect.objectContaining({ type: 'run_settled', seq: 1, outcome: 'interrupted' }),
     ]);
+  });
+
+  it('coalesces durability flushes across a turn of tool calls', async () => {
+    const journal = new RunJournal(directory);
+    await start(journal);
+    const headerFlushes = journal.flushesPerformed();
+    expect(headerFlushes).toBe(1);
+    let previous = (await stat(path.join(directory, 'run-a.jsonl'))).size;
+    const toolCalls = 30;
+    for (let index = 0; index < toolCalls; index += 1) {
+      await journal.append(
+        event('run-a', 'design-a', { type: 'tool_call_start', toolCallId: `tool-${index}` }),
+      );
+      await journal.append(
+        event('run-a', 'design-a', {
+          type: 'tool_call_result',
+          toolCallId: `tool-${index}`,
+          result: 'ok',
+        }),
+      );
+      const size = (await stat(path.join(directory, 'run-a.jsonl'))).size;
+      expect(size).toBeGreaterThan(previous);
+      expect(size - previous).toBeLessThan(2048);
+      previous = size;
+    }
+    expect(journal.flushesPerformed()).toBe(headerFlushes);
+    await journal.append(event('run-a', 'design-a', { type: 'turn_end', finalText: 'done' }));
+    expect(journal.flushesPerformed()).toBe(headerFlushes + 1);
+    expect(await lines()).toHaveLength(1 + toolCalls * 2 + 1);
+    await journal.append(event('run-a', 'design-a', { type: 'run_settled', outcome: 'completed' }));
+    expect(journal.flushesPerformed()).toBe(headerFlushes + 2);
+    expect((await journal.recover({})).events).toHaveLength(toolCalls * 2 + 2);
+  });
+
+  it('flushes an append that crosses the 1 MiB durability threshold', async () => {
+    const journal = new RunJournal(directory);
+    await start(journal);
+    const before = journal.flushesPerformed();
+    await journal.append(
+      event('run-a', 'design-a', {
+        type: 'tool_call_result',
+        toolCallId: 'tool-large',
+        result: 'x'.repeat(1024 * 1024 + 64),
+      }),
+    );
+    expect(journal.flushesPerformed()).toBe(before + 1);
   });
 
   it('sums settled provider usage after the journal is reopened', async () => {

@@ -483,14 +483,39 @@ export function registerGenerateIpc({ db, getMainWindow }: RegisterGenerateIpcDe
     if (_event?.sender) subscribers.add(_event.sender);
     await eventDelivery;
     if (!journal || !db) return { schemaVersion: 1, events: [] };
+    const database = db;
+    // Yield between batches so a long history cannot freeze IPC for the whole replay.
+    const projectHistory = async (events: readonly AgentStreamEvent[]): Promise<void> => {
+      if (events.length === 0) return;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      const batchSize = 32;
+      for (let index = 0; index < events.length; index += batchSize) {
+        const end = Math.min(events.length, index + batchSize);
+        const allowed = new Map<string, boolean>();
+        const allow = (designId: string): boolean => {
+          const known = allowed.get(designId);
+          if (known !== undefined) return known;
+          const ok = canRecoverDesign(designId);
+          allowed.set(designId, ok);
+          return ok;
+        };
+        for (let cursor = index; cursor < end; cursor += 1) {
+          const event = events[cursor];
+          if (event && allow(event.designId))
+            projectRunEventToChat({ db: database, sessionDir: database.sessionDir }, event);
+        }
+        if (end < events.length) {
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+        }
+      }
+    };
     repairedHistory ??= journal
       .allEvents()
-      .then((events) => {
-        for (const event of events) {
-          if (canRecoverDesign(event.designId))
-            projectRunEventToChat({ db, sessionDir: db.sessionDir }, event);
-        }
-      })
+      .then((events) => projectHistory(events))
       .catch((error: unknown) => {
         repairedHistory = undefined;
         throw error;
@@ -503,8 +528,7 @@ export function registerGenerateIpc({ db, getMainWindow }: RegisterGenerateIpcDe
     recovered.events = recovered.events
       .filter((event) => canRecoverDesign(event.designId))
       .map((event) => ({ ...event, chatPersisted: true }));
-    for (const event of recovered.events)
-      projectRunEventToChat({ db, sessionDir: db.sessionDir }, event);
+    await projectHistory(recovered.events);
     for (const event of recovered.events) projectionFailures.delete(event.generationId);
     return recovered;
   });

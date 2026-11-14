@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   type DesignSessionBriefV1,
@@ -41,9 +41,10 @@ export function appendSessionNativeSearchMessage(
   designId: string,
   message: import('@earendil-works/pi-ai').AssistantMessage,
 ): void {
-  const manager = openSession(opts, designId);
-  manager.appendCustomEntry(NATIVE_SEARCH_CUSTOM_TYPE, { schemaVersion: 1, message });
-  flushSession(manager);
+  commitOnCache(openCache(opts, designId), NATIVE_SEARCH_CUSTOM_TYPE, {
+    schemaVersion: 1,
+    message,
+  });
 }
 
 export function readSessionNativeSearchMessages(
@@ -52,9 +53,8 @@ export function readSessionNativeSearchMessages(
 ): import('@earendil-works/pi-ai').AssistantMessage[] {
   const file = sessionFileForDesign(opts.sessionDir, designId);
   if (!existsSync(file)) return [];
-  const manager = SessionManager.open(file, opts.sessionDir, resolveSessionCwd(opts, designId));
-  return manager
-    .getEntries()
+  const entries = loadCache(opts, designId, false)?.manager.getEntries() ?? [];
+  return entries
     .flatMap((entry) => {
       const custom = entry as CustomEntryLike;
       if (
@@ -162,6 +162,45 @@ interface CustomEntryLike {
   timestamp?: string;
 }
 
+interface ChatProjection {
+  rows: ChatMessageRow[];
+  deliveredIds: Set<string>;
+  eventKeys: Set<string>;
+  toolCalls: Map<string, number>;
+  rowIndexBySeq: Map<number, number>;
+}
+
+interface SessionCache {
+  designId: string;
+  file: string;
+  cwd: string;
+  manager: SessionManager;
+  size: number;
+  mtimeMs: number;
+  projection: ChatProjection;
+  activeMessages: Map<string, ActiveRunMessageV1>;
+}
+
+export interface SessionFileIoEvent {
+  kind: 'open' | 'write';
+  bytes: number;
+}
+
+const MAX_SESSION_CACHES = 8;
+const sessionCaches = new Map<string, SessionCache>();
+let sessionIoListener: ((event: SessionFileIoEvent) => void) | undefined;
+
+/** Counts session loads and appends. Performance tests use this; production leaves it unset. */
+export function setSessionFileIoListener(
+  listener: ((event: SessionFileIoEvent) => void) | undefined,
+): void {
+  sessionIoListener = listener;
+}
+
+export function clearSessionFileCache(): void {
+  sessionCaches.clear();
+}
+
 function sessionFileForDesign(sessionDir: string, designId: string): string {
   const safeId = designId.replace(/[^A-Za-z0-9_-]/g, '_');
   return path.join(sessionDir, `${safeId}.jsonl`);
@@ -182,22 +221,143 @@ function resolveSessionCwd(opts: SessionChatStoreOptions, designId: string): str
   }
 }
 
-function openSession(opts: SessionChatStoreOptions, designId: string): SessionManager {
-  mkdirSync(opts.sessionDir, { recursive: true });
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  return SessionManager.open(file, opts.sessionDir, resolveSessionCwd(opts, designId));
+function emptyProjection(): ChatProjection {
+  return {
+    rows: [],
+    deliveredIds: new Set(),
+    eventKeys: new Set(),
+    toolCalls: new Map(),
+    rowIndexBySeq: new Map(),
+  };
 }
 
-function flushSession(manager: SessionManager): void {
-  const file = manager.getSessionFile();
-  const header = manager.getHeader();
-  if (file === undefined || header === null) {
+function fileStamp(file: string): { size: number; mtimeMs: number } | null {
+  try {
+    const stat = statSync(file);
+    return { size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function fileSize(file: string): number {
+  return fileStamp(file)?.size ?? 0;
+}
+
+function rememberStamp(cache: SessionCache): void {
+  const stamp = fileStamp(cache.file);
+  cache.size = stamp?.size ?? 0;
+  cache.mtimeMs = stamp?.mtimeMs ?? 0;
+}
+
+function touchCache(cache: SessionCache): void {
+  sessionCaches.delete(cache.file);
+  sessionCaches.set(cache.file, cache);
+  while (sessionCaches.size > MAX_SESSION_CACHES) {
+    const oldest = sessionCaches.keys().next().value;
+    if (oldest === undefined) break;
+    sessionCaches.delete(oldest);
+  }
+}
+
+function cacheMatches(
+  cache: SessionCache,
+  cwd: string,
+  stamp: { size: number; mtimeMs: number },
+): boolean {
+  return cache.cwd === cwd && cache.size === stamp.size && cache.mtimeMs === stamp.mtimeMs;
+}
+
+/**
+ * One SessionManager per design file. `SessionManager.open` reads the JSONL
+ * (twice, inside pi) and is the only full load; later row checks hit the index.
+ */
+function loadCache(
+  opts: SessionChatStoreOptions,
+  designId: string,
+  create: boolean,
+): SessionCache | null {
+  const cwd = resolveSessionCwd(opts, designId);
+  const file = sessionFileForDesign(opts.sessionDir, designId);
+  const stamp = fileStamp(file);
+  const cached = sessionCaches.get(file);
+  if (cached && stamp && cacheMatches(cached, cwd, stamp)) {
+    touchCache(cached);
+    return cached;
+  }
+  if (!stamp && !create) {
+    if (cached) sessionCaches.delete(file);
+    return null;
+  }
+  mkdirSync(opts.sessionDir, { recursive: true });
+  const manager = SessionManager.open(file, opts.sessionDir, cwd);
+  sessionIoListener?.({ kind: 'open', bytes: stamp?.size ?? 0 });
+  const cache: SessionCache = {
+    designId,
+    file,
+    cwd,
+    manager,
+    size: 0,
+    mtimeMs: 0,
+    projection: emptyProjection(),
+    activeMessages: new Map(),
+  };
+  for (const entry of manager.getEntries()) {
+    applyProjectionEntry(designId, cache.projection, cache.activeMessages, entry);
+  }
+  rememberStamp(cache);
+  touchCache(cache);
+  return cache;
+}
+
+function openCache(opts: SessionChatStoreOptions, designId: string): SessionCache {
+  const cache = loadCache(opts, designId, true);
+  if (!cache) throw new CodesignError('Session file unavailable', 'IPC_DB_ERROR');
+  return cache;
+}
+
+function toolKey(runId: string, toolCallId: string): string {
+  return `${runId}\0${toolCallId}`;
+}
+
+/**
+ * pi appends when the open file is already flushed, and skips user-only
+ * sessions until an assistant message exists. Persist the missing line here
+ * instead of rewriting the history those paths used to flush.
+ */
+function persistNewEntry(cache: SessionCache, entry: unknown, before: number): number {
+  const after = fileSize(cache.file);
+  if (after !== before) return after - before;
+  const header = cache.manager.getHeader();
+  const sessionFile = cache.manager.getSessionFile();
+  if (header === null || sessionFile === undefined) {
     throw new CodesignError('Session file unavailable', 'IPC_DB_ERROR');
   }
-  // pi defers writing user-only sessions; desktop chat must persist immediately.
-  mkdirSync(path.dirname(file), { recursive: true });
-  const lines = [header, ...manager.getEntries()].map((entry) => JSON.stringify(entry));
-  writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+  mkdirSync(path.dirname(sessionFile), { recursive: true });
+  if (before === 0) {
+    const lines = [header, ...cache.manager.getEntries()].map((item) => JSON.stringify(item));
+    const body = `${lines.join('\n')}\n`;
+    writeFileSync(sessionFile, body, 'utf8');
+    return Buffer.byteLength(body);
+  }
+  const line = `${JSON.stringify(entry)}\n`;
+  appendFileSync(sessionFile, line);
+  return Buffer.byteLength(line);
+}
+
+function commitOnCache(cache: SessionCache, customType: string, data: unknown): CustomEntryLike {
+  const before = fileSize(cache.file);
+  const entryId = cache.manager.appendCustomEntry(customType, data);
+  const entry = cache.manager.getEntry(entryId);
+  if (!entry || entry.type !== 'custom') {
+    throw new CodesignError('Session entry missing after append', 'IPC_DB_ERROR');
+  }
+  const written = persistNewEntry(cache, entry, before);
+  applyProjectionEntry(cache.designId, cache.projection, cache.activeMessages, entry);
+  rememberStamp(cache);
+  if (written > 0) sessionIoListener?.({ kind: 'write', bytes: written });
+  return entry;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -336,70 +496,115 @@ function applyStatusUpdate(row: ChatMessageRow, update: StoredToolStatusUpdate):
   return { ...row, payload: nextPayload };
 }
 
-function replayEntries(designId: string, entries: unknown[]): ChatMessageRow[] {
-  const rows: ChatMessageRow[] = [];
-  const deliveredIds = new Set<string>();
-  for (const raw of entries) {
-    const entry = raw as CustomEntryLike;
-    if (entry.type !== 'custom') continue;
-    if (entry.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) {
-      const message = ActiveRunMessageV1.parse(entry.data);
-      if (message.designId !== designId)
-        throw new CodesignError('Stored message belongs to another design.', 'IPC_DB_ERROR');
-      if (message.status !== 'delivered' || deliveredIds.has(message.messageId)) continue;
-      deliveredIds.add(message.messageId);
-      rows.push({
-        schemaVersion: 1,
-        id: rows.length,
-        seq: rows.length,
-        designId,
-        kind: 'user',
-        payload: { text: message.text, activeMessageId: message.messageId, mode: message.mode },
-        snapshotId: null,
-        createdAt: entry.timestamp ?? message.createdAt,
-      });
-      continue;
-    }
-    if (entry.customType === CHAT_MESSAGE_CUSTOM_TYPE) {
-      const stored = parseStoredMessage(entry.data);
-      if (stored === null) {
-        throw new CodesignError('Malformed stored chat message entry', 'IPC_DB_ERROR');
-      }
-      rows.push({
-        schemaVersion: 1,
-        id: stored.id,
-        designId,
-        seq: stored.seq,
-        kind: stored.kind,
-        payload: stored.payload,
-        snapshotId: stored.snapshotId,
-        createdAt: entry.timestamp ?? new Date(0).toISOString(),
-      });
-      continue;
-    }
-    if (entry.customType === CHAT_TOOL_STATUS_CUSTOM_TYPE) {
-      const update = parseStatusUpdate(entry.data);
-      if (update === null) {
-        throw new CodesignError('Malformed stored chat tool-status entry', 'IPC_DB_ERROR');
-      }
-      const idx = rows.findIndex((row) => row.seq === update.seq);
-      if (idx < 0) continue;
-      const row = rows[idx];
-      if (row) rows[idx] = applyStatusUpdate(row, update);
-    }
+function rememberChatRow(projection: ChatProjection, row: ChatMessageRow): void {
+  projection.rowIndexBySeq.set(row.seq, projection.rows.length);
+  projection.rows.push(row);
+  if (!isRecord(row.payload)) return;
+  const eventKey = row.payload['runEventKey'];
+  if (typeof eventKey === 'string') projection.eventKeys.add(eventKey);
+  if (row.kind !== 'tool_call') return;
+  const runId = row.payload['runId'];
+  const toolCallId = row.payload['toolCallId'];
+  if (typeof runId !== 'string' || typeof toolCallId !== 'string') return;
+  const key = toolKey(runId, toolCallId);
+  if (!projection.toolCalls.has(key)) projection.toolCalls.set(key, row.seq);
+}
+
+function applyProjectionEntry(
+  designId: string,
+  projection: ChatProjection,
+  activeMessages: Map<string, ActiveRunMessageV1>,
+  raw: unknown,
+): void {
+  const entry = raw as CustomEntryLike;
+  if (entry.type !== 'custom') return;
+  if (entry.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) {
+    const message = ActiveRunMessageV1.parse(entry.data);
+    if (message.designId !== designId)
+      throw new CodesignError('Stored message belongs to another design.', 'IPC_DB_ERROR');
+    activeMessages.set(message.messageId, message);
+    if (message.status !== 'delivered' || projection.deliveredIds.has(message.messageId)) return;
+    projection.deliveredIds.add(message.messageId);
+    rememberChatRow(projection, {
+      schemaVersion: 1,
+      id: projection.rows.length,
+      seq: projection.rows.length,
+      designId,
+      kind: 'user',
+      payload: { text: message.text, activeMessageId: message.messageId, mode: message.mode },
+      snapshotId: null,
+      createdAt: entry.timestamp ?? message.createdAt,
+    });
+    return;
   }
-  return rows;
+  if (entry.customType === CHAT_MESSAGE_CUSTOM_TYPE) {
+    const stored = parseStoredMessage(entry.data);
+    if (stored === null) {
+      throw new CodesignError('Malformed stored chat message entry', 'IPC_DB_ERROR');
+    }
+    rememberChatRow(projection, {
+      schemaVersion: 1,
+      id: stored.id,
+      designId,
+      seq: stored.seq,
+      kind: stored.kind,
+      payload: stored.payload,
+      snapshotId: stored.snapshotId,
+      createdAt: entry.timestamp ?? new Date(0).toISOString(),
+    });
+    return;
+  }
+  if (entry.customType === CHAT_TOOL_STATUS_CUSTOM_TYPE) {
+    const update = parseStatusUpdate(entry.data);
+    if (update === null) {
+      throw new CodesignError('Malformed stored chat tool-status entry', 'IPC_DB_ERROR');
+    }
+    const idx = projection.rowIndexBySeq.get(update.seq);
+    if (idx === undefined) return;
+    const row = projection.rows[idx];
+    if (row) projection.rows[idx] = applyStatusUpdate(row, update);
+  }
 }
 
 export function listSessionChatMessages(
   opts: SessionChatStoreOptions,
   designId: string,
 ): ChatMessageRow[] {
-  const cwd = resolveSessionCwd(opts, designId);
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  if (!existsSync(file)) return [];
-  const manager = SessionManager.open(file, opts.sessionDir, cwd);
-  return replayEntries(designId, manager.getEntries());
+  const cache = loadCache(opts, designId, false);
+  if (!cache) return [];
+  return cache.projection.rows.map((row) => ({ ...row }));
+}
+
+export function sessionHasRunEventKey(
+  opts: SessionChatStoreOptions,
+  designId: string,
+  eventKey: string,
+): boolean {
+  const cache = loadCache(opts, designId, false);
+  return cache?.projection.eventKeys.has(eventKey) ?? false;
+}
+
+export function findSessionToolCall(
+  opts: SessionChatStoreOptions,
+  designId: string,
+  runId: string,
+  toolCallId: string | undefined,
+): ChatMessageRow | undefined {
+  const cache = loadCache(opts, designId, false);
+  if (!cache) return undefined;
+  if (typeof toolCallId !== 'string') {
+    const row = cache.projection.rows.find((candidate) => {
+      if (candidate.kind !== 'tool_call' || !isRecord(candidate.payload)) return false;
+      return candidate.payload['runId'] === runId && candidate.payload['toolCallId'] === undefined;
+    });
+    return row ? { ...row } : undefined;
+  }
+  const seq = cache.projection.toolCalls.get(toolKey(runId, toolCallId));
+  if (seq === undefined) return undefined;
+  const index = cache.projection.rowIndexBySeq.get(seq);
+  if (index === undefined) return undefined;
+  const row = cache.projection.rows[index];
+  return row ? { ...row } : undefined;
 }
 
 export function appendSessionActiveMessage(
@@ -407,27 +612,16 @@ export function appendSessionActiveMessage(
   message: ActiveRunMessageV1,
 ): void {
   const checked = ActiveRunMessageV1.parse(message);
-  const manager = openSession(opts, checked.designId);
-  manager.appendCustomEntry(ACTIVE_MESSAGE_CUSTOM_TYPE, checked);
-  flushSession(manager);
+  commitOnCache(openCache(opts, checked.designId), ACTIVE_MESSAGE_CUSTOM_TYPE, checked);
 }
 
 export function listSessionActiveMessages(
   opts: SessionChatStoreOptions,
   designId: string,
 ): ActiveRunMessageV1[] {
-  const cwd = resolveSessionCwd(opts, designId);
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  if (!existsSync(file)) return [];
-  const latest = new Map<string, ActiveRunMessageV1>();
-  for (const entry of SessionManager.open(file, opts.sessionDir, cwd).getEntries()) {
-    if (entry.type !== 'custom' || entry.customType !== ACTIVE_MESSAGE_CUSTOM_TYPE) continue;
-    const row = ActiveRunMessageV1.parse(entry.data);
-    if (row.designId !== designId)
-      throw new CodesignError('Stored message belongs to another design.', 'IPC_DB_ERROR');
-    latest.set(row.messageId, row);
-  }
-  return [...latest.values()];
+  const cache = loadCache(opts, designId, false);
+  if (!cache) return [];
+  return [...cache.activeMessages.values()];
 }
 
 function replayCommentEvents(designId: string, entries: unknown[]): CommentRow[] {
@@ -471,11 +665,9 @@ export function listSessionComments(
   designId: string,
   snapshotId?: string,
 ): CommentRow[] {
-  const cwd = resolveSessionCwd(opts, designId);
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  if (!existsSync(file)) return [];
-  const manager = SessionManager.open(file, opts.sessionDir, cwd);
-  const rows = replayCommentEvents(designId, manager.getEntries());
+  const entries = loadCache(opts, designId, false)?.manager.getEntries();
+  if (!entries) return [];
+  const rows = replayCommentEvents(designId, entries);
   return snapshotId === undefined ? rows : rows.filter((row) => row.snapshotId === snapshotId);
 }
 
@@ -493,12 +685,8 @@ function appendCommentEvent(
   designId: string,
   event: StoredCommentEvent,
 ): void {
-  const manager = openSession(opts, designId);
-  const entryId = manager.appendCustomEntry(COMMENT_CUSTOM_TYPE, event);
-  const entry = manager.getEntry(entryId);
-  flushSession(manager);
-  const createdAt = entry?.timestamp ?? new Date().toISOString();
-  touchDesignActivity(opts.db, designId, createdAt);
+  const entry = commitOnCache(openCache(opts, designId), COMMENT_CUSTOM_TYPE, event);
+  touchDesignActivity(opts.db, designId, entry.timestamp ?? new Date().toISOString());
 }
 
 export function appendSessionComment(
@@ -614,8 +802,8 @@ export function appendSessionChatMessage(
   input: ChatAppendInput,
   options: AppendSessionChatMessageOptions = {},
 ): ChatMessageRow {
-  const manager = openSession(opts, input.designId);
-  const seq = listSessionChatMessages(opts, input.designId).length;
+  const cache = openCache(opts, input.designId);
+  const seq = cache.projection.rows.length;
   const stored: StoredChatMessage = {
     schemaVersion: 1,
     id: seq,
@@ -624,34 +812,24 @@ export function appendSessionChatMessage(
     payload: input.payload ?? {},
     snapshotId: input.snapshotId ?? null,
   };
-  const entryId = manager.appendCustomEntry(CHAT_MESSAGE_CUSTOM_TYPE, stored);
-  const entry = manager.getEntry(entryId);
-  flushSession(manager);
-  const createdAt = entry?.timestamp ?? new Date().toISOString();
+  const entry = commitOnCache(cache, CHAT_MESSAGE_CUSTOM_TYPE, stored);
+  const index = cache.projection.rowIndexBySeq.get(seq);
+  const row = index === undefined ? undefined : cache.projection.rows[index];
+  if (!row) throw new CodesignError('Stored chat row missing after append', 'IPC_DB_ERROR');
   if (options.touchActivity !== false) {
-    touchDesignActivity(opts.db, input.designId, createdAt);
+    touchDesignActivity(opts.db, input.designId, entry.timestamp ?? row.createdAt);
   }
-  return {
-    schemaVersion: 1,
-    id: stored.id,
-    designId: input.designId,
-    seq,
-    kind: input.kind,
-    payload: stored.payload,
-    snapshotId: stored.snapshotId,
-    createdAt,
-  };
+  return { ...row };
 }
 
 export function appendSessionToolStatus(
   opts: SessionChatStoreOptions,
   input: ChatToolStatusUpdate,
 ): void {
-  const row = listSessionChatMessages(opts, input.designId).find(
-    (message) => message.seq === input.seq,
-  );
-  if (row?.kind !== 'tool_call') return;
-  const manager = openSession(opts, input.designId);
+  const cache = loadCache(opts, input.designId, false);
+  const index = cache?.projection.rowIndexBySeq.get(input.seq);
+  const row = index === undefined ? undefined : cache?.projection.rows[index];
+  if (!cache || row?.kind !== 'tool_call') return;
   const toolName =
     typeof (row.payload as { toolName?: unknown } | null)?.toolName === 'string'
       ? ((row.payload as { toolName: string }).toolName ?? 'unknown')
@@ -669,21 +847,16 @@ export function appendSessionToolStatus(
       ? { runResultEventKey: input.runResultEventKey }
       : {}),
   };
-  const entryId = manager.appendCustomEntry(CHAT_TOOL_STATUS_CUSTOM_TYPE, stored);
-  const entry = manager.getEntry(entryId);
-  flushSession(manager);
-  touchDesignActivity(opts.db, input.designId, entry?.timestamp ?? new Date().toISOString());
+  const entry = commitOnCache(cache, CHAT_TOOL_STATUS_CUSTOM_TYPE, stored);
+  touchDesignActivity(opts.db, input.designId, entry.timestamp ?? new Date().toISOString());
 }
 
 export function readSessionDesignBrief(
   opts: SessionChatStoreOptions,
   designId: string,
 ): DesignSessionBriefV1 | null {
-  const cwd = resolveSessionCwd(opts, designId);
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  if (!existsSync(file)) return null;
-  const manager = SessionManager.open(file, opts.sessionDir, cwd);
-  const entries = manager.getEntries();
+  const entries = loadCache(opts, designId, false)?.manager.getEntries();
+  if (!entries) return null;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index] as CustomEntryLike | undefined;
     if (entry?.type !== 'custom' || entry.customType !== CONTEXT_BRIEF_CUSTOM_TYPE) continue;
@@ -698,21 +871,18 @@ export function appendSessionDesignBrief(
   designId: string,
   brief: DesignSessionBriefV1,
 ): void {
-  const manager = openSession(opts, designId);
-  const stored: StoredDesignBrief = { schemaVersion: 1, brief };
-  manager.appendCustomEntry(CONTEXT_BRIEF_CUSTOM_TYPE, stored);
-  flushSession(manager);
+  commitOnCache(openCache(opts, designId), CONTEXT_BRIEF_CUSTOM_TYPE, {
+    schemaVersion: 1,
+    brief,
+  } satisfies StoredDesignBrief);
 }
 
 export function readSessionRunPreferences(
   opts: SessionChatStoreOptions,
   designId: string,
 ): DesignRunPreferencesV1 | null {
-  const cwd = resolveSessionCwd(opts, designId);
-  const file = sessionFileForDesign(opts.sessionDir, designId);
-  if (!existsSync(file)) return null;
-  const manager = SessionManager.open(file, opts.sessionDir, cwd);
-  const entries = manager.getEntries();
+  const entries = loadCache(opts, designId, false)?.manager.getEntries();
+  if (!entries) return null;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index] as CustomEntryLike | undefined;
     if (entry?.type !== 'custom' || entry.customType !== RUN_PREFERENCES_CUSTOM_TYPE) continue;
@@ -728,10 +898,10 @@ export function appendSessionRunPreferences(
   preferences: DesignRunPreferencesV1,
 ): void {
   const parsed = DesignRunPreferencesV1Schema.parse(preferences);
-  const manager = openSession(opts, designId);
-  const stored: StoredRunPreferences = { schemaVersion: 1, preferences: parsed };
-  manager.appendCustomEntry(RUN_PREFERENCES_CUSTOM_TYPE, stored);
-  flushSession(manager);
+  commitOnCache(openCache(opts, designId), RUN_PREFERENCES_CUSTOM_TYPE, {
+    schemaVersion: 1,
+    preferences: parsed,
+  } satisfies StoredRunPreferences);
 }
 
 export function seedSessionChatFromSnapshots(
