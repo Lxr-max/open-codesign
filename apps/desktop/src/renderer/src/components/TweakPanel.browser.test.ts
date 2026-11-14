@@ -6,6 +6,7 @@ import { parseEditmodeBlock } from '@open-codesign/shared';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { build, type PreviewServer, preview } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { installTransformedIframeClicks } from '../preview/transformed-iframe-click';
 import type { WorkspacePreviewWrite } from '../preview/tweak-persistence';
 import type {} from './__fixtures__/tweak-browser';
 
@@ -112,6 +113,7 @@ describe.skipIf(!chrome)('tweak keyboard persistence in system Chrome', () => {
     errors = [];
     await writeFile(file('first', 'App.jsx'), source);
     page = await browser.newPage();
+    await installTransformedIframeClicks(page);
     const networkFailures: string[] = [];
     const browserConsole: string[] = [];
     const pendingRequests = new Set<string>();

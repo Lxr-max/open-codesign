@@ -71,6 +71,7 @@ import {
   readWorkspacePreviewSource,
   resolveDesignPreviewSource,
 } from '../preview/workspace-source';
+import { previewScaledFrameStyle, useFitPreviewZoom } from '../preview/zoom';
 import { useCodesignStore } from '../store';
 import { SourceEditPanel } from './SourceEditPanel';
 
@@ -1580,6 +1581,7 @@ export function WorkspaceFilePreview({
   const currentDesignId = useCodesignStore((s) => s.currentDesignId);
   const designs = useCodesignStore((s) => s.designs);
   const currentPreviewSource = useCodesignStore((s) => s.previewSource);
+  const previewZoom = useCodesignStore((s) => s.previewZoom);
   const interactionMode = useCodesignStore((s) => s.interactionMode);
   const pushIframeError = useCodesignStore((s) => s.pushIframeError);
   const selectCanvasElement = useCodesignStore((s) => s.selectCanvasElement);
@@ -1641,6 +1643,8 @@ export function WorkspaceFilePreview({
   const [readError, setReadError] = useState<string | null>(null);
   const [sourceReadPending, setSourceReadPending] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [zoomHost, setZoomHost] = useState<HTMLDivElement | null>(null);
+  useFitPreviewZoom(zoomHost, true);
   const previousPreview = useRef<{
     designId: string | null;
     path: string;
@@ -2013,26 +2017,30 @@ export function WorkspaceFilePreview({
         </div>
       ) : null}
       <div className="relative flex min-h-0 flex-1">
-        <iframe
-          key={srcDoc}
-          ref={iframeRef}
-          title={`design-preview-${path}`}
-          sandbox={INTERACTIVE_PREVIEW_SANDBOX}
-          srcDoc={srcDoc}
-          onLoad={() => {
-            const win = iframeRef.current?.contentWindow;
-            postModeToPreviewWindow(win, previewInteractionMode, pushIframeError);
-            if (
-              interactive &&
-              !sourceEdit.active &&
-              commentBubble &&
-              commentBubble.sourcePath === activePreviewSource?.path
-            ) {
-              postPinSelectorToPreviewWindow(win, commentBubble.selector, pushIframeError);
-            }
-          }}
-          className="min-w-0 flex-1 h-full bg-white border-0 block"
-        />
+        <div ref={setZoomHost} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="absolute top-0 left-0" style={previewScaledFrameStyle(previewZoom)}>
+            <iframe
+              key={srcDoc}
+              ref={iframeRef}
+              title={`design-preview-${path}`}
+              sandbox={INTERACTIVE_PREVIEW_SANDBOX}
+              srcDoc={srcDoc}
+              onLoad={() => {
+                const win = iframeRef.current?.contentWindow;
+                postModeToPreviewWindow(win, previewInteractionMode, pushIframeError);
+                if (
+                  interactive &&
+                  !sourceEdit.active &&
+                  commentBubble &&
+                  commentBubble.sourcePath === activePreviewSource?.path
+                ) {
+                  postPinSelectorToPreviewWindow(win, commentBubble.selector, pushIframeError);
+                }
+              }}
+              className="block h-full w-full border-0 bg-white"
+            />
+          </div>
+        </div>
         <div hidden={previewFullscreen} className="min-h-0 shrink-0 max-w-[45%]">
           {interactive ? (
             <div

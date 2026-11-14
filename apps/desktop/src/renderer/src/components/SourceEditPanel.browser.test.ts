@@ -12,6 +12,7 @@ import {
   registerSourceEditsIpc,
 } from '../../../main/source-edits-ipc';
 import type { CodesignApi } from '../../../preload';
+import { installTransformedIframeClicks } from '../preview/transformed-iframe-click';
 
 type Handler = (event: unknown, raw: unknown) => Promise<unknown>;
 const handlers = vi.hoisted(() => new Map<string, Handler>());
@@ -197,6 +198,7 @@ describe('full FilesTab source edit browser + real IPC handlers over HTTP', () =
 
   async function openPage() {
     page = await browser.newPage();
+    await installTransformedIframeClicks(page);
     await page.setViewport({ width: 1500, height: 1000 });
     await page.evaluateOnNewDocument(() => {
       Reflect.set(window, 'sourceEditValidationReplies', []);

@@ -32,6 +32,11 @@ import {
   stablePreviewSourceKey,
 } from '../preview/helpers';
 import { inferPreviewSourcePath } from '../preview/workspace-source';
+import {
+  previewViewportDimensions,
+  useFitPreviewZoom,
+  workspacePreviewOwnsFitZoom,
+} from '../preview/zoom';
 import { useCodesignStore } from '../store';
 import type { CanvasTab } from '../store/slices/tabs';
 import { CanvasErrorBar } from './CanvasErrorBar';
@@ -58,6 +63,7 @@ export {
   scaleRectForZoom,
   stablePreviewSourceKey,
 } from '../preview/helpers';
+export { computeFitPreviewZoom, previewViewportDimensions } from '../preview/zoom';
 
 export interface PreviewPaneProps {
   onPickStarter: (prompt: string) => void;
@@ -86,13 +92,6 @@ type FramedPreviewViewport = Exclude<PreviewSlotProps['viewport'], 'mobile'>;
 const ARTBOARD_FRAME_CLASS =
   'relative flex-shrink-0 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-elevated)] ring-1 ring-[color-mix(in_srgb,var(--color-border)_35%,transparent)]';
 
-const PREVIEW_FRAME_PADDING_PX = 48;
-const PREVIEW_DIMENSIONS = {
-  desktop: { width: 1440, height: 900 },
-  tablet: { width: 768, height: 1024 },
-  mobile: { width: 381, height: 818 },
-} as const satisfies Record<PreviewSlotProps['viewport'], { width: number; height: number }>;
-
 const PREVIEW_PANE_LAYOUT_CLASSES = {
   root: 'flex min-h-0 min-w-0 flex-1 overflow-hidden',
   stage: 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
@@ -112,26 +111,6 @@ export function isPreviewPaneWelcomeState(input: {
 }): boolean {
   const onlyBaseFilesTab = input.tabCount <= 1 && input.activeTab?.kind === 'files';
   return onlyBaseFilesTab && !input.errorMessage && !input.previewSource && !input.designHasContent;
-}
-
-export function previewViewportDimensions(viewport: PreviewSlotProps['viewport']): {
-  width: number;
-  height: number;
-} {
-  return PREVIEW_DIMENSIONS[viewport];
-}
-
-export function computeFitPreviewZoom(input: {
-  containerWidth: number;
-  containerHeight: number;
-  viewport: PreviewSlotProps['viewport'];
-}): number {
-  if (input.containerWidth <= 0 || input.containerHeight <= 0) return 100;
-  const frame = previewViewportDimensions(input.viewport);
-  const availableWidth = Math.max(1, input.containerWidth - PREVIEW_FRAME_PADDING_PX);
-  const availableHeight = Math.max(1, input.containerHeight - PREVIEW_FRAME_PADDING_PX);
-  const fit = Math.min(availableWidth / frame.width, availableHeight / frame.height) * 100;
-  return Math.min(100, Math.max(25, Math.floor(fit)));
 }
 
 export function findReusablePendingCommentForSelector(input: {
@@ -346,8 +325,6 @@ export function PreviewPane({ onPickStarter }: PreviewPaneProps) {
   const selectCanvasElement = useCodesignStore((s) => s.selectCanvasElement);
   const previewViewport = useCodesignStore((s) => s.previewViewport);
   const previewZoom = useCodesignStore((s) => s.previewZoom);
-  const previewZoomMode = useCodesignStore((s) => s.previewZoomMode);
-  const setPreviewZoomFit = useCodesignStore((s) => s.setPreviewZoomFit);
   const interactionMode = useCodesignStore((s) => s.interactionMode);
   const comments = useCodesignStore((s) => s.comments);
   const currentSnapshotId = useCodesignStore((s) => s.currentSnapshotId);
@@ -365,6 +342,13 @@ export function PreviewPane({ onPickStarter }: PreviewPaneProps) {
   // or the active iframe element re-mounts.
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
+  const [canvasHost, setCanvasHost] = useState<HTMLDivElement | null>(null);
+  const assignCanvasHost = useCallback((node: HTMLDivElement | null) => {
+    canvasHostRef.current = node;
+    setCanvasHost(node);
+  }, []);
+  const activeTabKind = canvasTabs[activeCanvasTab]?.kind;
+  useFitPreviewZoom(canvasHost, !workspacePreviewOwnsFitZoom(activeTabKind));
   // Unsent drafts are keyed by comment id or design + source path + selector.
   // Lives across bubble remounts so switching to another chip / element and
   // coming back restores the text the user had typed. Cleared on successful
@@ -375,54 +359,6 @@ export function PreviewPane({ onPickStarter }: PreviewPaneProps) {
   // the WATCH_SELECTORS effect so we don't race past overlay installation
   // on first mount.
   const [iframeLoadTick, setIframeLoadTick] = useState(0);
-
-  useEffect(() => {
-    if (previewZoomMode !== 'fit') return;
-    const host = canvasHostRef.current;
-    if (!host) return;
-    let scheduled: { kind: 'raf' | 'timeout'; id: number } | null = null;
-
-    const updateFitZoom = () => {
-      const next = computeFitPreviewZoom({
-        containerWidth: host.clientWidth,
-        containerHeight: host.clientHeight,
-        viewport: previewViewport,
-      });
-      if (useCodesignStore.getState().previewZoom !== next) {
-        setPreviewZoomFit(next);
-      }
-    };
-    const scheduleFitZoom = () => {
-      if (scheduled !== null) return;
-      const flush = () => {
-        scheduled = null;
-        updateFitZoom();
-      };
-      if (typeof window.requestAnimationFrame === 'function') {
-        scheduled = { kind: 'raf', id: window.requestAnimationFrame(flush) };
-      } else {
-        scheduled = { kind: 'timeout', id: window.setTimeout(flush, 0) };
-      }
-    };
-    const cancelScheduledFitZoom = () => {
-      if (scheduled === null) return;
-      if (scheduled.kind === 'raf') window.cancelAnimationFrame(scheduled.id);
-      else window.clearTimeout(scheduled.id);
-      scheduled = null;
-    };
-
-    updateFitZoom();
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateFitZoom);
-      return () => window.removeEventListener('resize', updateFitZoom);
-    }
-    const observer = new ResizeObserver(scheduleFitZoom);
-    observer.observe(host);
-    return () => {
-      observer.disconnect();
-      cancelScheduledFitZoom();
-    };
-  }, [previewViewport, previewZoomMode, setPreviewZoomFit]);
 
   const registerIframe = useCallback((designId: string, el: HTMLIFrameElement | null) => {
     if (el) {
@@ -727,7 +663,7 @@ export function PreviewPane({ onPickStarter }: PreviewPaneProps) {
         )}
         <CanvasErrorBar />
         <div
-          ref={canvasHostRef}
+          ref={assignCanvasHost}
           className={PREVIEW_PANE_LAYOUT_CLASSES.canvasHost}
           onDrop={(e) => void handleDrop(e)}
           onDragOver={(e) => e.preventDefault()}
