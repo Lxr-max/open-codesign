@@ -53,6 +53,8 @@ GitHub Releases 是主要下载源。如果 GitHub 下载慢或不可达，可�
 
 开箱支持：Anthropic Claude、OpenAI GPT、Google Gemini、DeepSeek、OpenRouter、SiliconFlow、本地 Ollama、ChatGPT 订阅登录，以及任何 OpenAI 兼容端点。API Key 凭证通过 Electron `safeStorage` 加密存储于 `~/.config/open-codesign/config.toml`，ChatGPT OAuth token 保存在应用配置目录下的 token store 中，不会上传。
 
+在 Electron 无法识别的 Linux 桌面（niri、Hyprland、Sway 等）上，即使 libsecret 或 KWallet 已在运行，应用处于 `basic_text` 时也会拒绝保存密钥。在 **设置 → 高级 → 密码存储** 中选择 `gnome-libsecret` 或 `kwallet6` 并重启。该选择保存在 `preferences.json`，之后每次启动都会生效。`OPEN_CODESIGN_PASSWORD_STORE` 只覆盖这一次启动。
+
 ## 3. 输入第一条提示
 
 从 Hub 选一个内置 demo，或者自由描述。现在内置 15 个 demo brief。第一版几秒内就会出现在沙箱 iframe 里——HTML 或实时 React 组件，取决于提示内容。

@@ -53,6 +53,8 @@ First launch opens the Settings page. Pick one path:
 
 Supported out of the box: Anthropic Claude, OpenAI GPT, Google Gemini, DeepSeek, OpenRouter, SiliconFlow, local Ollama, ChatGPT subscription login, and any OpenAI-compatible endpoint. API-key credentials stay in `~/.config/open-codesign/config.toml`, encrypted via Electron `safeStorage`; ChatGPT OAuth tokens stay in the app config token store. Nothing is uploaded.
 
+On Linux desktops Electron does not recognise (niri, Hyprland, Sway, and others), saving a key fails while the app is on the `basic_text` store, even if libsecret or KWallet is running. Choose **Settings → Advanced → Password store** (`gnome-libsecret` or `kwallet6`) and restart. The choice stays in `preferences.json` and is applied on later launches. `OPEN_CODESIGN_PASSWORD_STORE` overrides one launch.
+
 ## 3. Type your first prompt
 
 Pick one of fifteen built-in demos from the Hub, or type your own. The first artifact renders in seconds inside a sandboxed iframe — HTML or a live React component, depending on what the prompt calls for.

@@ -1,3 +1,4 @@
+import type { LocalizedExample } from '@open-codesign/templates';
 import { useEffect, useState } from 'react';
 import { useCodesignStore } from '../store';
 import { DesignSystemsTab } from './hub/DesignSystemsTab';
@@ -6,7 +7,7 @@ import { RecentTab } from './hub/RecentTab';
 import { YourDesignsTab } from './hub/YourDesignsTab';
 
 export interface HubViewProps {
-  onUseExamplePrompt?: (prompt: string) => void;
+  onUseExamplePrompt?: (example: LocalizedExample) => void | Promise<void>;
 }
 
 // Once a tab is visited we keep it mounted (toggled via `hidden`) so the
@@ -27,7 +28,13 @@ export function HubView({ onUseExamplePrompt }: HubViewProps = {}) {
         data-codesign-hub-scroll-root
         className="codesign-scroll-area flex-1 min-h-0 overflow-y-auto"
       >
-        <div className="mx-auto max-w-[1600px] px-[clamp(var(--space-4),3vw,var(--space-8))] py-[clamp(var(--space-4),3vw,var(--space-8))]">
+        <div
+          className={
+            hubTab === 'resources'
+              ? 'h-full px-[clamp(var(--space-4),2vw,var(--space-6))] py-[var(--space-4)]'
+              : 'mx-auto max-w-[1600px] px-[clamp(var(--space-4),3vw,var(--space-8))] py-[clamp(var(--space-4),3vw,var(--space-8))]'
+          }
+        >
           {mounted.has('recent') ? (
             <div hidden={hubTab !== 'recent'}>
               <RecentTab />
@@ -40,11 +47,11 @@ export function HubView({ onUseExamplePrompt }: HubViewProps = {}) {
           ) : null}
           {mounted.has('examples') ? (
             <div hidden={hubTab !== 'examples'}>
-              <ExamplesTab onUsePrompt={(example) => onUseExamplePrompt?.(example.prompt)} />
+              <ExamplesTab onUsePrompt={(example) => onUseExamplePrompt?.(example)} />
             </div>
           ) : null}
           {mounted.has('resources') ? (
-            <div hidden={hubTab !== 'resources'}>
+            <div hidden={hubTab !== 'resources'} className="h-full">
               <DesignSystemsTab />
             </div>
           ) : null}

@@ -16,8 +16,12 @@ import type {
   DesignRunPreferencesV1,
 } from '@open-codesign/shared';
 import {
+  ActiveRunMessageV1,
   CodesignError,
+  type CommentApplyResultV1,
+  type CommentContentExpectations,
   CommentRowV1,
+  commentContentFingerprint,
   DesignRunPreferencesV1 as DesignRunPreferencesV1Schema,
 } from '@open-codesign/shared';
 import { compactToolResultForHistory } from './ipc/tool-log';
@@ -29,6 +33,54 @@ export const CHAT_TOOL_STATUS_CUSTOM_TYPE = 'open-codesign.chat.tool_status';
 export const COMMENT_CUSTOM_TYPE = 'open-codesign.comment.v1';
 export const CONTEXT_BRIEF_CUSTOM_TYPE = 'open-codesign.context.brief.v1';
 export const RUN_PREFERENCES_CUSTOM_TYPE = 'open-codesign.context.run_preferences.v1';
+export const ACTIVE_MESSAGE_CUSTOM_TYPE = 'open-codesign.active-message.v1';
+const NATIVE_SEARCH_CUSTOM_TYPE = 'open-codesign.native-search.v1';
+
+export function appendSessionNativeSearchMessage(
+  opts: SessionChatStoreOptions,
+  designId: string,
+  message: import('@earendil-works/pi-ai').AssistantMessage,
+): void {
+  const manager = openSession(opts, designId);
+  manager.appendCustomEntry(NATIVE_SEARCH_CUSTOM_TYPE, { schemaVersion: 1, message });
+  flushSession(manager);
+}
+
+export function readSessionNativeSearchMessages(
+  opts: SessionChatStoreOptions,
+  designId: string,
+): import('@earendil-works/pi-ai').AssistantMessage[] {
+  const file = sessionFileForDesign(opts.sessionDir, designId);
+  if (!existsSync(file)) return [];
+  const manager = SessionManager.open(file, opts.sessionDir, resolveSessionCwd(opts, designId));
+  return manager
+    .getEntries()
+    .flatMap((entry) => {
+      const custom = entry as CustomEntryLike;
+      if (
+        custom.type !== 'custom' ||
+        custom.customType !== NATIVE_SEARCH_CUSTOM_TYPE ||
+        !custom.data ||
+        typeof custom.data !== 'object'
+      )
+        return [];
+      const value = custom.data as {
+        schemaVersion?: number;
+        message?: import('@earendil-works/pi-ai').AssistantMessage;
+      };
+      const message = value.message;
+      if (
+        value.schemaVersion !== 1 ||
+        message?.role !== 'assistant' ||
+        !Array.isArray(message.content) ||
+        !Array.isArray(message.nativeSearch?.output) ||
+        !['openai', 'anthropic'].includes(message.nativeSearch.provider)
+      )
+        return [];
+      return [message];
+    })
+    .slice(-100);
+}
 
 export interface SessionChatStoreOptions {
   db: Database;
@@ -42,6 +94,7 @@ export interface ChatToolStatusUpdate {
   result?: unknown;
   durationMs?: number;
   errorMessage?: string;
+  runResultEventKey?: string;
 }
 
 interface StoredChatMessage {
@@ -60,8 +113,10 @@ interface StoredToolStatusUpdate {
   result?: unknown;
   durationMs?: number;
   errorMessage?: string;
+  runResultEventKey?: string;
 }
 
+type StoredCommentPatch = CommentUpdateInput & { appliedInSnapshotId?: null };
 type StoredCommentEvent =
   | {
       schemaVersion: 1;
@@ -72,7 +127,7 @@ type StoredCommentEvent =
       schemaVersion: 1;
       action: 'update';
       id: string;
-      patch: CommentUpdateInput;
+      patch: StoredCommentPatch;
     }
   | {
       schemaVersion: 1;
@@ -182,6 +237,9 @@ function parseStatusUpdate(value: unknown): StoredToolStatusUpdate | null {
     ...(value['result'] !== undefined ? { result: value['result'] } : {}),
     ...(typeof value['durationMs'] === 'number' ? { durationMs: value['durationMs'] } : {}),
     ...(typeof value['errorMessage'] === 'string' ? { errorMessage: value['errorMessage'] } : {}),
+    ...(typeof value['runResultEventKey'] === 'string'
+      ? { runResultEventKey: value['runResultEventKey'] }
+      : {}),
   };
 }
 
@@ -198,7 +256,8 @@ function parseCommentEvent(value: unknown): StoredCommentEvent | null {
     if (typeof value['id'] !== 'string') return null;
     const patch = value['patch'];
     if (!isRecord(patch)) return null;
-    const nextPatch: CommentUpdateInput = {};
+    const nextPatch: StoredCommentPatch = {};
+    if (patch['appliedInSnapshotId'] === null) nextPatch.appliedInSnapshotId = null;
     if (typeof patch['text'] === 'string') nextPatch.text = patch['text'];
     if (
       patch['status'] === 'pending' ||
@@ -256,10 +315,18 @@ function parseStoredRunPreferences(value: unknown): StoredRunPreferences | null 
 
 function applyStatusUpdate(row: ChatMessageRow, update: StoredToolStatusUpdate): ChatMessageRow {
   if (row.kind !== 'tool_call') return row;
-  const prev = isRecord(row.payload) ? row.payload : {};
+  const prev = { ...(isRecord(row.payload) ? row.payload : {}) };
+  if (update.runResultEventKey !== undefined) {
+    // A committed tool result replaces errors inferred by run settlement.
+    delete prev['error'];
+    delete prev['errorMessage'];
+  }
   const nextPayload: ChatToolCallPayload = {
     ...(prev as unknown as ChatToolCallPayload),
     status: update.status,
+    ...(update.runResultEventKey !== undefined
+      ? { runResultEventKey: update.runResultEventKey }
+      : {}),
     ...(update.result !== undefined ? { result: update.result } : {}),
     ...(update.durationMs !== undefined ? { durationMs: update.durationMs } : {}),
     ...(update.errorMessage !== undefined
@@ -271,9 +338,28 @@ function applyStatusUpdate(row: ChatMessageRow, update: StoredToolStatusUpdate):
 
 function replayEntries(designId: string, entries: unknown[]): ChatMessageRow[] {
   const rows: ChatMessageRow[] = [];
+  const deliveredIds = new Set<string>();
   for (const raw of entries) {
     const entry = raw as CustomEntryLike;
     if (entry.type !== 'custom') continue;
+    if (entry.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) {
+      const message = ActiveRunMessageV1.parse(entry.data);
+      if (message.designId !== designId)
+        throw new CodesignError('Stored message belongs to another design.', 'IPC_DB_ERROR');
+      if (message.status !== 'delivered' || deliveredIds.has(message.messageId)) continue;
+      deliveredIds.add(message.messageId);
+      rows.push({
+        schemaVersion: 1,
+        id: rows.length,
+        seq: rows.length,
+        designId,
+        kind: 'user',
+        payload: { text: message.text, activeMessageId: message.messageId, mode: message.mode },
+        snapshotId: null,
+        createdAt: entry.timestamp ?? message.createdAt,
+      });
+      continue;
+    }
     if (entry.customType === CHAT_MESSAGE_CUSTOM_TYPE) {
       const stored = parseStoredMessage(entry.data);
       if (stored === null) {
@@ -314,6 +400,34 @@ export function listSessionChatMessages(
   if (!existsSync(file)) return [];
   const manager = SessionManager.open(file, opts.sessionDir, cwd);
   return replayEntries(designId, manager.getEntries());
+}
+
+export function appendSessionActiveMessage(
+  opts: SessionChatStoreOptions,
+  message: ActiveRunMessageV1,
+): void {
+  const checked = ActiveRunMessageV1.parse(message);
+  const manager = openSession(opts, checked.designId);
+  manager.appendCustomEntry(ACTIVE_MESSAGE_CUSTOM_TYPE, checked);
+  flushSession(manager);
+}
+
+export function listSessionActiveMessages(
+  opts: SessionChatStoreOptions,
+  designId: string,
+): ActiveRunMessageV1[] {
+  const cwd = resolveSessionCwd(opts, designId);
+  const file = sessionFileForDesign(opts.sessionDir, designId);
+  if (!existsSync(file)) return [];
+  const latest = new Map<string, ActiveRunMessageV1>();
+  for (const entry of SessionManager.open(file, opts.sessionDir, cwd).getEntries()) {
+    if (entry.type !== 'custom' || entry.customType !== ACTIVE_MESSAGE_CUSTOM_TYPE) continue;
+    const row = ActiveRunMessageV1.parse(entry.data);
+    if (row.designId !== designId)
+      throw new CodesignError('Stored message belongs to another design.', 'IPC_DB_ERROR');
+    latest.set(row.messageId, row);
+  }
+  return [...latest.values()];
 }
 
 function replayCommentEvents(designId: string, entries: unknown[]): CommentRow[] {
@@ -408,6 +522,7 @@ export function appendSessionComment(
     appliedInSnapshotId: null,
     ...(input.scope !== undefined ? { scope: input.scope } : {}),
     ...(input.parentOuterHTML !== undefined ? { parentOuterHTML: input.parentOuterHTML } : {}),
+    ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
   });
   appendCommentEvent(opts, input.designId, {
     schemaVersion: 1,
@@ -425,8 +540,12 @@ export function updateSessionComment(
 ): CommentRow | null {
   const existing = listSessionComments(opts, designId).find((row) => row.id === id);
   if (existing === undefined) return null;
-  appendCommentEvent(opts, designId, { schemaVersion: 1, action: 'update', id, patch });
-  return { ...existing, ...patch };
+  const nextPatch: StoredCommentPatch =
+    existing.kind === 'edit' && patch.text !== undefined && patch.text !== existing.text
+      ? { ...patch, status: 'pending', appliedInSnapshotId: null }
+      : patch;
+  appendCommentEvent(opts, designId, { schemaVersion: 1, action: 'update', id, patch: nextPatch });
+  return { ...existing, ...nextPatch };
 }
 
 export function removeSessionComment(
@@ -461,6 +580,35 @@ export function markSessionCommentsApplied(
   return listSessionComments(opts, designId).filter((row) => presentIds.includes(row.id));
 }
 
+export function markSessionCommentsAppliedIfUnchanged(
+  opts: SessionChatStoreOptions,
+  designId: string,
+  ids: string[],
+  snapshotId: string,
+  expectedContent: CommentContentExpectations,
+): CommentApplyResultV1 {
+  const rows = new Map(listSessionComments(opts, designId).map((row) => [row.id, row]));
+  const matched: string[] = [];
+  const conflictedIds: string[] = [];
+  for (const id of new Set(ids)) {
+    const row = rows.get(id);
+    if (
+      row?.kind === 'edit' &&
+      row.status === 'pending' &&
+      expectedContent[id] === commentContentFingerprint(row)
+    ) {
+      matched.push(id);
+    } else {
+      conflictedIds.push(id);
+    }
+  }
+  // The comparison and append are synchronous on the main-process event loop.
+  return {
+    schemaVersion: 1,
+    applied: markSessionCommentsApplied(opts, designId, matched, snapshotId),
+    conflictedIds,
+  };
+}
 export function appendSessionChatMessage(
   opts: SessionChatStoreOptions,
   input: ChatAppendInput,
@@ -517,6 +665,9 @@ export function appendSessionToolStatus(
       : {}),
     ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
     ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
+    ...(input.runResultEventKey !== undefined
+      ? { runResultEventKey: input.runResultEventKey }
+      : {}),
   };
   const entryId = manager.appendCustomEntry(CHAT_TOOL_STATUS_CUSTOM_TYPE, stored);
   const entry = manager.getEntry(entryId);

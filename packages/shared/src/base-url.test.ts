@@ -414,6 +414,18 @@ describe('modelsEndpointUrl', () => {
     );
   });
 
+  it('openai-chat: Atlas Cloud versioned base + /models', () => {
+    expect(modelsEndpointUrl('https://api.atlascloud.ai/v1', 'openai-chat')).toBe(
+      'https://api.atlascloud.ai/v1/models',
+    );
+  });
+
+  it('openai-chat: LLMTR versioned base + /models', () => {
+    expect(modelsEndpointUrl('https://llmtr.com/v1', 'openai-chat')).toBe(
+      'https://llmtr.com/v1/models',
+    );
+  });
+
   it('openai-chat: GLM /api/paas/v4/models', () => {
     expect(
       modelsEndpointUrl('https://open.bigmodel.cn/api/paas/v4/chat/completions', 'openai-chat'),
