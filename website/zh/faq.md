@@ -61,6 +61,12 @@ Bolt.new 是基于浏览器的全栈应用构建器，跑在 StackBlitz 的 WebC
 
 可以。Open CoDesign 支持 ChatGPT Plus / Pro / Team 订阅登录，可用于 Codex 模型和图像生成。一键完成，无需 API Key。
 
+## 为什么在有些 Linux 桌面上保存不了 API Key？
+
+Electron 在启动时选择密码存储，只会把 GNOME、KDE、XFCE 等少数桌面映射到 libsecret 或 KWallet。niri、Hyprland、Sway 这类会话会选中 `basic_text`。这种存储无法保护 API Key，即使 gnome-keyring 或 KWallet 已经在运行，应用也会拒绝保存。
+
+打开 **设置 → 高级 → 密码存储**，选择 `gnome-libsecret`（libsecret / GNOME Keyring）或 `kwallet6`（KWallet），然后重启。选择会写在与 `config.toml` 同目录的 `preferences.json` 里，之后每次启动都会生效，不必每次加命令行参数。`OPEN_CODESIGN_PASSWORD_STORE=gnome-libsecret` 只影响这一次启动。如果命令行带了 `--password-store`，以该参数为准。密钥服务确实不可用时，应用仍然不会保存密钥。
+
 ## Open CoDesign 会把我的提示词或设计发给第三方吗？
 
 不会。设计、提示词和扫描结果都存在你本机。v0.2 使用 JSONL 保存 design session，并把生成源码放在真实工作区文件里，配置文件在 `~/.config/open-codesign/config.toml`。唯一的对外网络流量就是直接发给你配置的模型入口，例如 provider API、本地网关或 ChatGPT 订阅端点。默认零遥测。

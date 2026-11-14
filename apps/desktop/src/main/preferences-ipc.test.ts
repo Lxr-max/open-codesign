@@ -67,6 +67,7 @@ describe('readPersisted()', () => {
       userMemoryAutoUpdate: false,
       proxyUrl: '',
       systemNotifications: true,
+      passwordStore: '',
     });
   });
 
@@ -507,6 +508,57 @@ describe('preferences memory schema fields', () => {
       JSON.stringify({ schemaVersion: 10, diagnosticsLastReadTs: 1, systemNotifications: 1 }),
     );
     await expect(readPersisted()).rejects.toThrow(/systemNotifications must be a boolean/);
+  });
+
+  it('defaults a missing passwordStore to automatic', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, diagnosticsLastReadTs: 1, systemNotifications: true }),
+    );
+    await expect(readPersisted()).resolves.toMatchObject({ passwordStore: '' });
+  });
+
+  it('round-trips a Linux password store and can clear it', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, diagnosticsLastReadTs: 1, passwordStore: '' }),
+    );
+    const updated = await (
+      handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>
+    )(null, { passwordStore: 'gnome-libsecret' });
+    expect(updated).toMatchObject({ passwordStore: 'gnome-libsecret' });
+
+    const lastCall = writeFileMock.mock.calls.at(-1);
+    if (!lastCall) throw new Error('writeFile was not called');
+    expect(JSON.parse(lastCall[1])).toMatchObject({
+      schemaVersion: 10,
+      passwordStore: 'gnome-libsecret',
+    });
+
+    readFileMock.mockResolvedValueOnce(lastCall[1]);
+    const cleared = await (
+      handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>
+    )(null, { passwordStore: '' });
+    expect(cleared).toMatchObject({ passwordStore: '' });
+  });
+
+  it('rejects password stores that are not real Electron backends', async () => {
+    await expect(
+      (handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>)(null, {
+        passwordStore: 'basic',
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.IPC_BAD_INPUT });
+    await expect(
+      (handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>)(null, {
+        passwordStore: 'gnome_libsecret',
+      }),
+    ).rejects.toThrow(/passwordStore/);
+    expect(writeFileMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a persisted passwordStore outside the allowlist', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, passwordStore: 'basic' }),
+    );
+    await expect(readPersisted()).rejects.toThrow(/passwordStore/);
   });
 });
 

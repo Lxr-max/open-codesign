@@ -145,6 +145,12 @@ The security model is:
 
 Installers are unsigned as of v0.2.0. Apple Developer ID notarization and Windows Authenticode signing land in v0.5. Until then, the repo documents reliable manual-install instructions for each platform.
 
+## Why does saving an API key fail on some Linux desktops?
+
+Electron picks a password store when the app starts. It only maps GNOME, KDE, XFCE, and a few other desktops to libsecret or KWallet. On niri, Hyprland, Sway, and similar sessions it selects `basic_text`, which cannot protect API keys, even when gnome-keyring or KWallet is already running. The app then refuses the save.
+
+Open **Settings → Advanced → Password store**, choose `gnome-libsecret` (libsecret / GNOME Keyring) or `kwallet6` (KWallet), and restart. That choice is saved in `preferences.json` next to `config.toml` and applied on later launches, so you do not need a command-line flag each time. `OPEN_CODESIGN_PASSWORD_STORE=gnome-libsecret` sets the same store for a single launch. If you pass `--password-store`, that flag wins. When no secret service is actually available, the app still refuses to store the key.
+
 ## How can I contribute to Open CoDesign?
 
 - **Report bugs** — open an issue with reproduction steps.

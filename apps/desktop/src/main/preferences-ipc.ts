@@ -14,6 +14,11 @@ import { CodesignError, ERROR_CODES } from '@open-codesign/shared';
 import { ipcMain, session } from 'electron';
 import { configDir } from './config';
 import { getLogger } from './logger';
+import {
+  LINUX_PASSWORD_STORES,
+  type LinuxPasswordStore,
+  parsePasswordStoreSetting,
+} from './password-store';
 
 const logger = getLogger('preferences-ipc');
 
@@ -53,6 +58,11 @@ export interface Preferences {
   proxyUrl: string;
   /** Notify through the OS when a design run ends or asks a question while the window is in the background. */
   systemNotifications: boolean;
+  /**
+   * Linux safeStorage backend pinned on the next launch. Empty leaves
+   * Electron's desktop detection in place. Absence on older files means empty.
+   */
+  passwordStore: LinuxPasswordStore | '';
 }
 
 interface PreferencesFile extends Preferences {
@@ -74,6 +84,7 @@ const DEFAULTS: Preferences = {
   userMemoryAutoUpdate: false,
   proxyUrl: '',
   systemNotifications: true,
+  passwordStore: '',
 };
 
 const PREFERENCE_UPDATE_FIELDS = [
@@ -87,6 +98,7 @@ const PREFERENCE_UPDATE_FIELDS = [
   'userMemoryAutoUpdate',
   'proxyUrl',
   'systemNotifications',
+  'passwordStore',
 ] as const;
 
 function assertKnownPreferenceFields(r: Record<string, unknown>): void {
@@ -234,6 +246,7 @@ function parsePersistedFile(rawJson: unknown): Preferences {
       DEFAULTS.userMemoryAutoUpdate,
     ),
     proxyUrl: readPersistedString(parsed, 'proxyUrl', DEFAULTS.proxyUrl),
+    passwordStore: readPersistedPasswordStore(parsed),
     systemNotifications: readPersistedBoolean(
       parsed,
       'systemNotifications',
@@ -365,6 +378,28 @@ function readDismissedVersion(r: Record<string, unknown>): string | undefined {
   return value;
 }
 
+function readPersistedPasswordStore(r: Record<string, unknown>): LinuxPasswordStore | '' {
+  const parsed = parsePasswordStoreSetting(r['passwordStore']);
+  if (!parsed.ok) {
+    failInvalidPersistedPreference(
+      `passwordStore must be empty or one of: ${LINUX_PASSWORD_STORES.join(', ')}`,
+    );
+  }
+  return parsed.value;
+}
+
+function readPasswordStoreUpdate(r: Record<string, unknown>): LinuxPasswordStore | '' | undefined {
+  if (!Object.hasOwn(r, 'passwordStore')) return undefined;
+  const parsed = parsePasswordStoreSetting(r['passwordStore']);
+  if (!parsed.ok) {
+    throw new CodesignError(
+      `passwordStore must be empty or one of: ${LINUX_PASSWORD_STORES.join(', ')}`,
+      ERROR_CODES.IPC_BAD_INPUT,
+    );
+  }
+  return parsed.value;
+}
+
 function readProxyUrl(r: Record<string, unknown>): string | undefined {
   const value = r['proxyUrl'];
   if (value === undefined) return undefined;
@@ -413,6 +448,8 @@ function parsePreferences(raw: unknown): Partial<Preferences> {
   if (userMemoryAutoUpdate !== undefined) out.userMemoryAutoUpdate = userMemoryAutoUpdate;
   const proxyUrl = readProxyUrl(r);
   if (proxyUrl !== undefined) out.proxyUrl = proxyUrl;
+  const passwordStore = readPasswordStoreUpdate(r);
+  if (passwordStore !== undefined) out.passwordStore = passwordStore;
   const systemNotifications = readSystemNotifications(r);
   if (systemNotifications !== undefined) out.systemNotifications = systemNotifications;
   return out;

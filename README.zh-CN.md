@@ -193,6 +193,8 @@ scoop install opencoworkai/open-codesign
 
 凭证会保存在 `~/.config/open-codesign/config.toml`，ChatGPT OAuth token 会保存在应用配置目录下的 token store 中。除非你选择的模型入口本身需要联网，请求内容不会额外离开你的机器。
 
+在 Linux 上，API Key 会用桌面密钥服务加密。Electron 只会为 GNOME、KDE、XFCE 等少数桌面自动选中该服务。niri、Hyprland、Sway 这类会话会落到 `basic_text`，即使 libsecret 或 KWallet 已经在运行，应用也会拒绝保存密钥。打开 **设置 → 高级 → 密码存储**，选择 `gnome-libsecret` 或 `kwallet6` 后重启。这个选择写在与 `config.toml` 同目录的 `preferences.json` 里，之后每次启动都会生效，不必每次加命令行参数。`OPEN_CODESIGN_PASSWORD_STORE=gnome-libsecret` 只对这一次启动生效。如果命令行已经带了 `--password-store`，以命令行为准。
+
 ### 3. 输入第一条提示词
 
 你可以直接选 **十五个内置 demo** 之一，比如 landing page、dashboard、pitch slide、pricing、mobile app、chat UI、event calendar、blog article、receipt/invoice、portfolio、settings panel 等，也可以直接写自己的需求。几秒内，你就能看到一个沙箱中的可交互原型。

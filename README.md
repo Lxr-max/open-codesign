@@ -235,6 +235,8 @@ JSX previews and standalone exports use `system-ui` by default without downloadi
 
 Credentials stay in `~/.config/open-codesign/config.toml` and the ChatGPT OAuth token store under the app config directory. Nothing leaves your machine unless your chosen model route requires it.
 
+On Linux, API keys are encrypted with the desktop secret service. Electron only selects that service automatically for GNOME, KDE, XFCE, and a few other desktops. On niri, Hyprland, Sway, and similar sessions it falls back to `basic_text` and the app refuses to save the key, even when libsecret or KWallet is already running. Open **Settings → Advanced → Password store**, choose `gnome-libsecret` or `kwallet6`, and restart. The choice is stored in `preferences.json` next to `config.toml` and applied on later launches, so you do not need a command-line flag every time. `OPEN_CODESIGN_PASSWORD_STORE=gnome-libsecret` sets the same store for one launch. An explicit `--password-store` argument still wins.
+
 ### 3. Type your first prompt
 
 Pick one of **fifteen built-in demos** — landing page, dashboard, pitch slide, pricing, mobile app, chat UI, event calendar, blog article, receipt/invoice, portfolio, settings panel, and more — or describe your own. A sandboxed prototype appears in seconds.

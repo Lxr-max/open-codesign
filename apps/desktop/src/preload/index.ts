@@ -52,6 +52,7 @@ import type {
   TestEndpointResponse,
 } from '../main/connection-ipc';
 import type { ImageGenerationSettingsView } from '../main/image-generation-settings';
+import type { LinuxPasswordStore } from '../main/password-store';
 
 export type {
   ClaudeCodeUserType,
@@ -284,6 +285,8 @@ export interface Preferences {
   userMemoryAutoUpdate: boolean;
   proxyUrl: string;
   systemNotifications: boolean;
+  /** Linux safeStorage backend applied on the next launch. Empty keeps Electron's automatic choice. */
+  passwordStore: LinuxPasswordStore | '';
 }
 
 export interface MemoryFileRead {

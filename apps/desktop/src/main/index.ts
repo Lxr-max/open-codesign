@@ -12,19 +12,33 @@ import { configDir } from './config';
 import { registerConnectionIpc } from './connection-ipc';
 import { registerDesignSystemLibraryIpc } from './design-system-library-ipc';
 import { registerDiagnosticsIpc } from './diagnostics-ipc';
-import { app, BACKGROUND_DEBUG, BrowserWindow, clipboard, dialog, shell } from './electron-runtime';
+import {
+  app,
+  BACKGROUND_DEBUG,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  safeStorage,
+  shell,
+} from './electron-runtime';
 import { ensureUserTemplates, resolveBundledTemplatesDir } from './ensure-user-templates';
 import { registerExporterIpc } from './exporter-ipc';
 import { registerImageGenerationSettingsIpc } from './image-generation-settings';
 import { maybeAbortIfRunningFromDmg } from './install-check';
 import { registerIpcHandlers } from './ipc/register';
 import { getPendingUpdate, setupAutoUpdater } from './ipc/update';
+import { applyLinuxPasswordStoreSwitch } from './linux-password-store';
 import { registerLocaleIpc } from './locale-ipc';
 import { getLogger, initLogger } from './logger';
 import { registerMemoryIpc } from './memory-ipc';
 import { isTrustedMainWindowNavigationUrl } from './navigation-policy';
 import { loadConfigOnBoot, registerOnboardingIpc } from './onboarding-ipc';
 import { isAllowedExternalUrl } from './open-external';
+import {
+  linuxDesktopLabel,
+  linuxPasswordStoreLogFields,
+  readSelectedPasswordBackend,
+} from './password-store';
 import {
   applyProxyConfig,
   readPersisted as readPreferences,
@@ -196,6 +210,9 @@ async function scheduleStartupUpdateCheck(): Promise<void> {
 }
 
 if (!IS_VITEST) {
+  // Chromium chooses the Linux safeStorage backend while the browser starts,
+  // at the ready event. The pin has to be on the command line before that.
+  const passwordStorePin = applyLinuxPasswordStoreSwitch(app.commandLine);
   registerWorkspaceScheme();
 
   void app.whenReady().then(async () => {
@@ -244,6 +261,21 @@ if (!IS_VITEST) {
 
     try {
       initLogger();
+      if (process.platform === 'linux') {
+        getLogger('main:boot').info(
+          'password-store.selected',
+          linuxPasswordStoreLogFields(
+            passwordStorePin,
+            readSelectedPasswordBackend(
+              safeStorage as { getSelectedStorageBackend?: () => string },
+            ),
+            linuxDesktopLabel({
+              XDG_CURRENT_DESKTOP: process.env['XDG_CURRENT_DESKTOP'],
+              XDG_SESSION_DESKTOP: process.env['XDG_SESSION_DESKTOP'],
+            }),
+          ),
+        );
+      }
       // Single-instance lock. Two simultaneous Electron instances would race
       // `cleanupStaleTmps` vs `writeAtomic` (B's cleanup unlinks A's in-flight
       // tmp → ENOENT rename) and collide on local JSON writes. macOS usually

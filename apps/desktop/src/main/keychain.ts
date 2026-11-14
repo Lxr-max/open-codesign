@@ -1,38 +1,47 @@
 import { CodesignError, type Config, ERROR_CODES, type SecretRef } from '@open-codesign/shared';
 import { safeStorage } from './electron-runtime';
 import { getLogger } from './logger';
+import {
+  basicTextPasswordStoreMessage,
+  linuxDesktopLabel,
+  OS_SECRET_SERVICE_UNAVAILABLE_MESSAGE,
+  readSelectedPasswordBackend,
+} from './password-store';
 
 const ENCRYPTED_PREFIX = 'safe:';
 const PLAIN_PREFIX = 'plain:';
 const logger = getLogger('keychain');
 
 /**
- * Electron reports encryption as available for the Linux "basic_text" backend,
- * but that backend uses a hardcoded key and does not protect secrets at rest.
- * Fail closed on write for that backend; existing rows remain readable so users
- * can migrate once a real Secret Service provider is available.
+ * Electron's `basic_text` backend uses a hardcoded key. On current Electron,
+ * `isEncryptionAvailable()` is also false for that backend unless the app
+ * opts into plaintext encryption, so the backend has to be checked first.
+ * Fail closed on write; existing rows stay readable so users can migrate
+ * after a real backend is selected.
  */
+function selectedBackend(): string | null {
+  return readSelectedPasswordBackend(safeStorage as { getSelectedStorageBackend?: () => string });
+}
+
 function isInsecureStorageBackend(): boolean {
-  const getter = (safeStorage as { getSelectedStorageBackend?: () => string })
-    .getSelectedStorageBackend;
-  if (typeof getter !== 'function') return false;
-  try {
-    return getter.call(safeStorage) === 'basic_text';
-  } catch {
-    return false;
-  }
+  return selectedBackend() === 'basic_text';
 }
 
 function assertEncryptionAvailableForStore(): void {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (isInsecureStorageBackend()) {
     throw new CodesignError(
-      'OS keychain (secure storage) is not available. API keys cannot be stored. Finish installing the app (do not run from a mounted DMG) or enable your OS secret service, then try again.',
+      basicTextPasswordStoreMessage(
+        linuxDesktopLabel({
+          XDG_CURRENT_DESKTOP: process.env['XDG_CURRENT_DESKTOP'],
+          XDG_SESSION_DESKTOP: process.env['XDG_SESSION_DESKTOP'],
+        }),
+      ),
       ERROR_CODES.KEYCHAIN_UNAVAILABLE,
     );
   }
-  if (isInsecureStorageBackend()) {
+  if (!safeStorage.isEncryptionAvailable()) {
     throw new CodesignError(
-      'OS keychain is using Electron basic_text backend, which does not protect API keys. Install a Secret Service provider (e.g. gnome-keyring or KWallet) and restart.',
+      OS_SECRET_SERVICE_UNAVAILABLE_MESSAGE,
       ERROR_CODES.KEYCHAIN_UNAVAILABLE,
     );
   }

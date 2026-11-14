@@ -22,6 +22,7 @@ vi.mock('./logger', () => ({
 
 import { safeStorage } from './electron-runtime';
 import { decryptSecret, encryptSecret, migrateSecrets } from './keychain';
+import { OS_SECRET_SERVICE_UNAVAILABLE_MESSAGE } from './password-store';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -59,15 +60,88 @@ describe('decryptSecret', () => {
 
   it('fails closed instead of writing plaintext when encryption is unavailable', () => {
     vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValueOnce(false);
-    expectKeychainUnavailable(() => encryptSecret('sk-test-secret'));
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValueOnce('gnome_libsecret');
+    try {
+      encryptSecret('sk-test-secret');
+      throw new Error('Expected KEYCHAIN_UNAVAILABLE');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodesignError);
+      expect((err as CodesignError).code).toBe(ERROR_CODES.KEYCHAIN_UNAVAILABLE);
+      expect((err as CodesignError).message).toBe(OS_SECRET_SERVICE_UNAVAILABLE_MESSAGE);
+      expect((err as CodesignError).message).toContain('enable your OS secret service');
+      expect((err as CodesignError).message).not.toContain('basic_text');
+    }
+    expect(safeStorage.encryptString).not.toHaveBeenCalled();
     expect(loggerMock.warn).not.toHaveBeenCalledWith(
       'keychain.safeStorage.unavailable_plaintext_fallback',
     );
   });
 
-  it('fails closed when Linux basic_text backend is selected', () => {
-    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValueOnce('basic_text');
+  it('fails closed when Linux basic_text is selected even if encryption reports available', () => {
+    vi.stubEnv('XDG_CURRENT_DESKTOP', 'niri');
+    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(true);
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue('basic_text');
+    try {
+      encryptSecret('sk-test-secret');
+      throw new Error('Expected KEYCHAIN_UNAVAILABLE');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodesignError);
+      expect((err as CodesignError).code).toBe(ERROR_CODES.KEYCHAIN_UNAVAILABLE);
+      expect((err as CodesignError).message).toContain('basic_text');
+      expect((err as CodesignError).message).toContain('niri');
+      expect((err as CodesignError).message).toContain('Settings > Advanced > Password store');
+      expect((err as CodesignError).message).toContain(
+        'OPEN_CODESIGN_PASSWORD_STORE=gnome-libsecret',
+      );
+      expect((err as CodesignError).message).not.toContain('enable your OS secret service');
+    }
+    expect(safeStorage.encryptString).not.toHaveBeenCalled();
+  });
+
+  it('names password-store selection when basic_text is selected and encryption is unavailable', () => {
+    vi.stubEnv('XDG_SESSION_DESKTOP', 'sway');
+    vi.stubEnv('XDG_CURRENT_DESKTOP', '');
+    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue('basic_text');
+    try {
+      encryptSecret('sk-test-secret');
+      throw new Error('Expected KEYCHAIN_UNAVAILABLE');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodesignError);
+      expect((err as CodesignError).message).toContain('desktop "sway"');
+      expect((err as CodesignError).message).toContain('was not mapped to libsecret or KWallet');
+      expect((err as CodesignError).message).not.toContain('enable your OS secret service');
+    }
+    expect(safeStorage.encryptString).not.toHaveBeenCalled();
+  });
+
+  it('keeps the secret-service message when a real backend is selected but unavailable', () => {
+    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue('kwallet6');
+    try {
+      encryptSecret('sk-test-secret');
+      throw new Error('Expected KEYCHAIN_UNAVAILABLE');
+    } catch (err) {
+      expect((err as CodesignError).message).toBe(OS_SECRET_SERVICE_UNAVAILABLE_MESSAGE);
+    }
+  });
+
+  it('keeps the secret-service message when the backend cannot be read', () => {
+    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockImplementation(() => {
+      throw new Error('backend unavailable');
+    });
     expectKeychainUnavailable(() => encryptSecret('sk-test-secret'));
+    try {
+      encryptSecret('sk-test-secret');
+    } catch (err) {
+      expect((err as CodesignError).message).toContain('enable your OS secret service');
+    }
+  });
+
+  it('encrypts when a recognised keyring backend is selected', () => {
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValueOnce('kwallet5');
+    expect(encryptSecret('sk-test-secret')).toMatch(/^safe:/);
   });
 
   it('reads existing plaintext secret rows', () => {

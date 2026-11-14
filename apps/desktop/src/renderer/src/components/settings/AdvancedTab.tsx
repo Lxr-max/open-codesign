@@ -1,5 +1,10 @@
 import { useT } from '@open-codesign/i18n';
 import { useEffect, useState } from 'react';
+import {
+  LINUX_PASSWORD_STORES,
+  parsePasswordStoreSetting,
+  shouldShowPasswordStoreSetting,
+} from '../../../../main/password-store';
 import type { Preferences } from '../../../../preload/index';
 import { useCodesignStore } from '../../store';
 import { cleanIpcError, NativeSelect, Row, SegmentedControl } from './primitives';
@@ -79,6 +84,7 @@ export function AdvancedTab() {
     userMemoryAutoUpdate: false,
     proxyUrl: '',
     systemNotifications: true,
+    passwordStore: '',
   });
 
   useEffect(() => {
@@ -108,6 +114,11 @@ export function AdvancedTab() {
       });
     }
   }
+
+  const showPasswordStore = shouldShowPasswordStoreSetting(
+    typeof navigator === 'undefined' ? '' : navigator.userAgent,
+    prefs.passwordStore,
+  );
 
   async function handleDevtools() {
     if (!window.codesign) return;
@@ -180,6 +191,25 @@ export function AdvancedTab() {
       <Row label={t('settings.advanced.proxy')} hint={t('settings.advanced.proxyHint')}>
         <ProxyUrlInput value={prefs.proxyUrl} onCommit={(v) => void updatePref({ proxyUrl: v })} />
       </Row>
+
+      {showPasswordStore ? (
+        <Row
+          label={t('settings.advanced.passwordStore')}
+          hint={t('settings.advanced.passwordStoreHint')}
+        >
+          <NativeSelect
+            value={prefs.passwordStore}
+            onChange={(value) => {
+              const parsed = parsePasswordStoreSetting(value);
+              if (parsed.ok) void updatePref({ passwordStore: parsed.value });
+            }}
+            options={[
+              { value: '', label: t('settings.advanced.passwordStoreAuto') },
+              ...LINUX_PASSWORD_STORES.map((store) => ({ value: store, label: store })),
+            ]}
+          />
+        </Row>
+      ) : null}
 
       <Row label={t('settings.advanced.devtools')} hint={t('settings.advanced.devtoolsHint')}>
         <button

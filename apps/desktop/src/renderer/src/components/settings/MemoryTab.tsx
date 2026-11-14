@@ -16,6 +16,7 @@ const DEFAULT_PREFS: Preferences = {
   userMemoryAutoUpdate: false,
   proxyUrl: '',
   systemNotifications: true,
+  passwordStore: '',
 };
 
 export function MemoryTab() {
