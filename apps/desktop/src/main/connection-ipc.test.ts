@@ -5,6 +5,13 @@ vi.mock('./electron-runtime', () => ({
   ipcMain: { handle: vi.fn() },
 }));
 
+vi.mock('./codex-models', () => ({
+  getCodexModelOptions: vi.fn(async () => ({
+    suggestedModel: 'local-codex-model',
+    models: ['local-codex-model', 'catalog-model'],
+  })),
+}));
+
 // Mock the TLS-bypass wrapper so tests can assert the enabled flag passed to
 // it without actually swapping the global undici dispatcher mid-test. The
 // pass-through impl preserves the existing fetch path so all other suites in
@@ -15,10 +22,17 @@ vi.mock('./tls-override', () => ({
 
 import { createHash } from 'node:crypto';
 import {
+  hydrateConfig,
+  LITELLM_CONNECTION_HINT_KEYS,
+  resolveListForProviderPlan,
+} from '@open-codesign/shared';
+import { getCodexModelOptions } from './codex-models';
+import {
   _clearModelsCache,
   buildAuthHeaders,
   buildAuthHeadersForWire,
   CONNECTION_FETCH_TIMEOUT_MS,
+  type ConnectionTestResponse,
   classifyHttpError,
   classifyNetworkTarget,
   extractIds,
@@ -26,11 +40,14 @@ import {
   fetchWithTimeout,
   getCacheKey,
   handleConfigV1TestEndpoint,
+  handleModelsV1ListForProvider,
   handleOllamaV1Probe,
+  type ModelsListResponse,
   normalizeBaseUrl,
   normalizeOllamaBaseUrl,
   runProviderTest,
 } from './connection-ipc';
+import { getCachedConfig, setCachedConfig } from './onboarding/config-cache';
 import { withTlsBypass } from './tls-override';
 
 // ---------------------------------------------------------------------------
@@ -39,7 +56,84 @@ import { withTlsBypass } from './tls-override';
 // network responses without hitting the network.
 // ---------------------------------------------------------------------------
 
-import type { ConnectionTestResponse, ModelsListResponse } from './connection-ipc';
+describe('ChatGPT model suggestions for saved providers', () => {
+  beforeEach(() => {
+    setCachedConfig(
+      hydrateConfig({
+        version: 3,
+        activeProvider: 'chatgpt-codex',
+        activeModel: 'explicit-active-model',
+        secrets: {},
+        providers: {
+          'chatgpt-codex': {
+            id: 'chatgpt-codex',
+            name: 'ChatGPT',
+            builtin: false,
+            wire: 'openai-codex-responses',
+            baseUrl: 'https://chatgpt.com/backend-api',
+            defaultModel: 'explicit-default-model',
+            modelsHint: ['obsolete-hint'],
+            requiresApiKey: false,
+          },
+        },
+      }),
+    );
+  });
+  afterEach(() =>
+    setCachedConfig(
+      hydrateConfig({
+        version: 3,
+        activeProvider: '',
+        activeModel: '',
+        secrets: {},
+        providers: {},
+      }),
+    ),
+  );
+
+  it('includes explicit selections and maintained catalog suggestions instead of legacy persisted hints', async () => {
+    expect(await handleModelsV1ListForProvider('chatgpt-codex')).toEqual({
+      ok: true,
+      models: [
+        'explicit-active-model',
+        'explicit-default-model',
+        'local-codex-model',
+        'catalog-model',
+      ],
+      discoveryMode: 'static-hint',
+      source: 'static-hint',
+    });
+  });
+
+  it('surfaces local catalog failures without resetting the selected model', async () => {
+    vi.mocked(getCodexModelOptions).mockRejectedValueOnce(new Error('Unreadable Codex config'));
+    expect(await handleModelsV1ListForProvider('chatgpt-codex')).toMatchObject({
+      ok: false,
+      message: 'Unreadable Codex config',
+      hint: expect.stringContaining('Settings > Models'),
+      discoveryMode: 'static-hint',
+    });
+  });
+
+  it('keeps a custom Codex-wire provider’s explicit model hints', async () => {
+    const cfg = getCachedConfig();
+    const entry = cfg?.providers['chatgpt-codex'];
+    if (!cfg || !entry) throw new Error('Missing test config');
+    setCachedConfig({
+      ...cfg,
+      providers: {
+        ...cfg.providers,
+        'custom-codex': { ...entry, id: 'custom-codex', modelsHint: ['custom-model'] },
+      },
+    });
+    expect(await handleModelsV1ListForProvider('custom-codex')).toEqual({
+      ok: true,
+      models: ['custom-model', 'explicit-default-model'],
+      discoveryMode: 'static-hint',
+      source: 'static-hint',
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // connection:v1:test test helper
@@ -554,6 +648,31 @@ describe('models:v1:list-for-provider input validation', () => {
   it('accepts a valid provider id string', () => {
     const result = validateListForProviderInput('claude-code-anthropic');
     expect(result).toBeNull();
+  });
+
+  it('respects declared discovery modes instead of always fetching /models', () => {
+    expect(
+      resolveListForProviderPlan('chatgpt-codex', {
+        wire: 'openai-codex-responses',
+        defaultModel: 'gpt-5.5',
+        modelsHint: ['gpt-5.5', 'gpt-5.4'],
+        requiresApiKey: false,
+      }).action,
+    ).toBe('return');
+    expect(
+      resolveListForProviderPlan('glm', {
+        wire: 'openai-chat',
+        defaultModel: 'glm-4.6',
+        capabilities: { modelDiscoveryMode: 'infer-only' },
+      }),
+    ).toMatchObject({ action: 'return', source: 'local', models: ['glm-4.6'] });
+    expect(
+      resolveListForProviderPlan('openai', {
+        wire: 'openai-chat',
+        defaultModel: 'gpt-4o',
+        capabilities: { modelDiscoveryMode: 'models' },
+      }).action,
+    ).toBe('fetch-remote');
   });
 });
 
@@ -1188,6 +1307,188 @@ describe('runProviderTest degrade-probe (issue #179)', () => {
   });
 });
 
+describe('runProviderTest discovery modes (issue #210)', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('infer-only skips GET /models and treats inference success as compatible', async () => {
+    const { calls, restore } = installFakeFetch((url) => {
+      if (url.endsWith('/models')) return { status: 404 };
+      if (url.endsWith('/chat/completions')) return { status: 200, body: { id: 'ok' } };
+      return { status: 500 };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'glm',
+        wire: 'openai-chat',
+        apiKey: 'sk-test',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        modelDiscoveryMode: 'infer-only',
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.probeMethod).toBe('inference');
+        expect(res.compatibility).toBe('compatible');
+      }
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toMatch(/\/chat\/completions$/);
+      expect(calls.some((c) => c.url.endsWith('/models'))).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('manual skips GET /models', async () => {
+    const { calls, restore } = installFakeFetch((url) => {
+      if (url.endsWith('/responses')) return { status: 200, body: { id: 'ok' } };
+      return { status: 404 };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'custom',
+        wire: 'openai-responses',
+        apiKey: 'sk-test',
+        baseUrl: 'https://proxy.example.com/v1',
+        modelDiscoveryMode: 'manual',
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.probeMethod).toBe('inference');
+        expect(res.compatibility).toBe('compatible');
+      }
+      expect(calls.some((c) => c.url.endsWith('/models'))).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('infer-only failure reports the inference attemptedUrl', async () => {
+    const { restore } = installFakeFetch((url) => {
+      if (url.endsWith('/chat/completions')) return { status: 404 };
+      return { status: 500 };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'glm',
+        wire: 'openai-chat',
+        apiKey: 'sk-test',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        modelDiscoveryMode: 'infer-only',
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.code).toBe('404');
+        expect(res.attemptedUrl).toBe('https://open.bigmodel.cn/api/paas/v4/chat/completions');
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('models mode failure reports the /models attemptedUrl when degrade also 404s', async () => {
+    const { restore } = installFakeFetch((url) => {
+      if (url.endsWith('/models')) return { status: 404 };
+      if (url.endsWith('/chat/completions')) return { status: 404 };
+      return { status: 500 };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'custom',
+        wire: 'openai-chat',
+        apiKey: 'sk-test',
+        baseUrl: 'https://proxy.example.com/v1',
+        modelDiscoveryMode: 'models',
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.code).toBe('404');
+        expect(res.attemptedUrl).toBe('https://proxy.example.com/v1/models');
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it.each([
+    {
+      wire: 'openai-responses',
+      mode: 'manual',
+      baseUrl: 'https://proxy.example.com/v1',
+      attemptedUrl: 'https://proxy.example.com/v1/responses',
+      status: 401,
+    },
+    {
+      wire: 'anthropic',
+      mode: 'infer-only',
+      baseUrl: 'https://proxy.example.com/v1',
+      attemptedUrl: 'https://proxy.example.com/v1/messages',
+      status: 500,
+    },
+    {
+      wire: 'openai-chat',
+      mode: 'manual',
+      baseUrl: 'https://proxy.example.com/v4/chat/completions',
+      attemptedUrl: 'https://proxy.example.com/v4/chat/completions',
+      status: null,
+    },
+  ] as const)('reports the actual $wire inference URL on an HTTP or network failure', async ({
+    wire,
+    mode,
+    baseUrl,
+    attemptedUrl,
+    status,
+  }) => {
+    const { calls, restore } = installFakeFetch(() => {
+      if (status === null) throw new Error('Connection lost');
+      return { status };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'custom',
+        wire,
+        apiKey: 'sk-test',
+        baseUrl,
+        modelDiscoveryMode: mode,
+      });
+      expect(res).toMatchObject({ ok: false, attemptedUrl });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe(attemptedUrl);
+      if (!res.ok) {
+        if (status === null) expect(res.code).toBe('NETWORK');
+        else expect(res.message).toBe(`HTTP ${status}`);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('models mode still degrade-probes /models 404 as before', async () => {
+    const { calls, restore } = installFakeFetch((url) => {
+      if (url.endsWith('/models')) return { status: 404 };
+      if (url.endsWith('/chat/completions')) return { status: 200, body: { id: 'ok' } };
+      return { status: 500 };
+    });
+    try {
+      const res = await runProviderTest({
+        provider: 'glm',
+        wire: 'openai-chat',
+        apiKey: 'sk-test',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        modelDiscoveryMode: 'models',
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.probeMethod).toBe('chat_completion_degraded');
+        expect(res.compatibility).toBe('degraded');
+      }
+      expect(calls[0]?.url).toMatch(/\/models$/);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe('config:v1:test-endpoint response parsing', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -1206,6 +1507,25 @@ describe('config:v1:test-endpoint response parsing', () => {
         ok: false,
         error: 'parse',
         message: 'Provider returned unexpected models response shape',
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('treats GET /models 404 as listing-unavailable rather than a hard failure', async () => {
+    const { restore } = installFakeFetch(() => ({ status: 404 }));
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          apiKey: 'sk-test',
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: 'not-a-model-endpoint',
+        message: 'HTTP 404',
       });
     } finally {
       restore();
@@ -1394,6 +1714,87 @@ describe('config:v1:test-endpoint response parsing', () => {
       restore();
     }
   });
+
+  it.each([
+    'openai-chat',
+    'openai-responses',
+    'anthropic',
+  ])('allows explicitly keyless %s endpoint discovery without an auth header', async (wire) => {
+    const { calls, restore } = installFakeFetch((_url, init) => {
+      const headers = new Headers(init.headers);
+      expect(headers.has('authorization')).toBe(false);
+      expect(headers.has('x-api-key')).toBe(false);
+      return { status: 200, body: { data: [{ id: 'gpt-6-astra' }] } };
+    });
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire,
+          baseUrl: 'http://127.0.0.1:18537/v1',
+          apiKey: '  ',
+          requiresApiKey: false,
+          allowPrivateNetwork: true,
+        }),
+      ).resolves.toEqual({ ok: true, modelCount: 1, models: ['gpt-6-astra'] });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe('http://127.0.0.1:18537/v1/models');
+    } finally {
+      restore();
+    }
+  });
+
+  it.each([
+    null,
+    'false',
+    0,
+  ])('rejects malformed requiresApiKey (%s) before fetch', async (requiresApiKey) => {
+    const { calls, restore } = installFakeFetch(() => {
+      throw new Error('fetch should not be called');
+    });
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-responses',
+          baseUrl: 'https://provider.example/v1',
+          apiKey: '',
+          requiresApiKey,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: 'bad-input',
+        message: 'requiresApiKey must be a boolean',
+      });
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('still requires a key when explicitly marked as keyed', async () => {
+    await expect(
+      handleConfigV1TestEndpoint({
+        wire: 'openai-responses',
+        baseUrl: 'https://provider.example/v1',
+        apiKey: '',
+        requiresApiKey: true,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: 'bad-input',
+      message: 'apiKey must be a non-empty string',
+    });
+  });
+
+  it('does not let keyless opt-in bypass private-network confirmation', async () => {
+    await expect(
+      handleConfigV1TestEndpoint({
+        wire: 'openai-responses',
+        baseUrl: 'http://127.0.0.1:18537/v1',
+        apiKey: '',
+        requiresApiKey: false,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: 'private-network-confirmation-required' });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1545,6 +1946,310 @@ describe('TLS bypass routing', () => {
       expect(vi.mocked(withTlsBypass)).not.toHaveBeenCalled();
     } finally {
       restore();
+    }
+  });
+});
+
+describe('LiteLLM connection diagnostics', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    _clearModelsCache();
+  });
+
+  function statusFetch(status: number): () => void {
+    return installFakeFetch(() => ({ status, body: {} })).restore;
+  }
+
+  function refusedFetch(): () => void {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:4000'), {
+          code: 'ECONNREFUSED',
+        }),
+      });
+    }) as typeof fetch;
+    return () => {
+      globalThis.fetch = original;
+    };
+  }
+
+  it('hints for LiteLLM connection tests and stays quiet for other gateways', async () => {
+    const auth = statusFetch(401);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://llm.example/v1',
+          apiKey: 'sk-test',
+          presetId: 'litellm',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: 'auth',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.auth,
+      });
+    } finally {
+      auth();
+    }
+
+    const missing = statusFetch(404);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'http://127.0.0.1:4000',
+          apiKey: 'sk-test',
+          allowPrivateNetwork: true,
+          presetId: 'litellm',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+      });
+    } finally {
+      missing();
+    }
+
+    const remoteMissing = statusFetch(404);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://gateway.example/litellm/v1',
+          apiKey: 'sk-test',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFound,
+      });
+    } finally {
+      remoteMissing();
+    }
+
+    const portOnly = statusFetch(404);
+    try {
+      const res = await handleConfigV1TestEndpoint({
+        wire: 'openai-chat',
+        baseUrl: 'http://127.0.0.1:4000',
+        apiKey: 'sk-test',
+        allowPrivateNetwork: true,
+      });
+      expect(res).toEqual({ ok: false, error: 'not-a-model-endpoint', message: 'HTTP 404' });
+      expect(res).not.toHaveProperty('hintKey');
+    } finally {
+      portOnly();
+    }
+
+    const refused = refusedFetch();
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'http://localhost:4000/v1',
+          apiKey: '',
+          requiresApiKey: false,
+          allowPrivateNetwork: true,
+          presetId: 'litellm',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: 'network',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.unreachable,
+      });
+    } finally {
+      refused();
+    }
+
+    const refusedOther = refusedFetch();
+    try {
+      const res = await handleConfigV1TestEndpoint({
+        wire: 'openai-chat',
+        baseUrl: 'http://localhost:4000/v1',
+        apiKey: '',
+        requiresApiKey: false,
+        allowPrivateNetwork: true,
+      });
+      expect(res).toMatchObject({ ok: false, error: 'network' });
+      expect(res).not.toHaveProperty('hintKey');
+    } finally {
+      refusedOther();
+    }
+
+    const other = statusFetch(401);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://api.example/v1',
+          apiKey: 'sk-test',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'auth', message: 'HTTP 401' });
+    } finally {
+      other();
+    }
+
+    const badPreset = statusFetch(200);
+    try {
+      await expect(
+        handleConfigV1TestEndpoint({
+          wire: 'openai-chat',
+          baseUrl: 'https://llm.example/v1',
+          apiKey: 'sk-test',
+          presetId: 'other',
+        }),
+      ).resolves.toMatchObject({ ok: false, error: 'bad-input' });
+    } finally {
+      badPreset();
+    }
+  });
+
+  it('hints when a saved LiteLLM provider fails its connection test', async () => {
+    const auth = statusFetch(401);
+    try {
+      await expect(
+        runProviderTest({
+          provider: 'custom-litellm-gateway-ab12',
+          name: 'Renamed gateway',
+          wire: 'openai-chat',
+          apiKey: 'sk-test',
+          baseUrl: 'https://llm.example/v1',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: '401',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.auth,
+      });
+    } finally {
+      auth();
+    }
+
+    const missing = statusFetch(404);
+    try {
+      await expect(
+        runProviderTest({
+          provider: 'custom-other',
+          name: 'LiteLLM Gateway',
+          wire: 'openai-chat',
+          apiKey: '',
+          baseUrl: 'https://llm.example/v1',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: '404',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFound,
+      });
+    } finally {
+      missing();
+    }
+
+    const localMissing = statusFetch(404);
+    try {
+      await expect(
+        runProviderTest({
+          provider: 'custom-litellm-gateway-ab12',
+          name: 'Renamed gateway',
+          wire: 'openai-chat',
+          apiKey: '',
+          baseUrl: 'http://localhost:4000/v1',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: '404',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.notFoundLocal,
+      });
+    } finally {
+      localMissing();
+    }
+
+    const portOnly = statusFetch(404);
+    try {
+      const res = await runProviderTest({
+        provider: 'custom-other',
+        name: 'Other gateway',
+        wire: 'openai-chat',
+        apiKey: '',
+        baseUrl: 'http://localhost:4000/v1',
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.hintKey).toBeUndefined();
+    } finally {
+      portOnly();
+    }
+
+    const unrelated = statusFetch(401);
+    try {
+      const res = await runProviderTest({
+        provider: 'custom-other',
+        name: 'Other gateway',
+        wire: 'openai-chat',
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.example/v1',
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.hintKey).toBeUndefined();
+    } finally {
+      unrelated();
+    }
+  });
+
+  it('hints when model discovery fails for a saved LiteLLM provider', async () => {
+    const load = (id: string, name: string, baseUrl: string) => {
+      setCachedConfig(
+        hydrateConfig({
+          version: 3,
+          activeProvider: id,
+          activeModel: 'gpt-4o-mini',
+          secrets: {},
+          providers: {
+            [id]: {
+              id,
+              name,
+              builtin: false,
+              wire: 'openai-chat',
+              baseUrl,
+              defaultModel: 'gpt-4o-mini',
+              requiresApiKey: false,
+            },
+          },
+        }),
+      );
+    };
+
+    const id = 'custom-litellm-gateway-ab12';
+    load(id, 'LiteLLM Gateway', 'https://llm.example/v1');
+    const auth = statusFetch(401);
+    try {
+      await expect(handleModelsV1ListForProvider(id)).resolves.toMatchObject({
+        ok: false,
+        code: 'HTTP',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.auth,
+      });
+    } finally {
+      auth();
+    }
+
+    _clearModelsCache();
+    const refused = refusedFetch();
+    try {
+      await expect(handleModelsV1ListForProvider(id)).resolves.toMatchObject({
+        ok: false,
+        code: 'NETWORK',
+        hintKey: LITELLM_CONNECTION_HINT_KEYS.unreachable,
+      });
+    } finally {
+      refused();
+    }
+
+    _clearModelsCache();
+    load('custom-other', 'Other gateway', 'https://api.example/v1');
+    const other = statusFetch(404);
+    try {
+      const res = await handleModelsV1ListForProvider('custom-other');
+      expect(res).toMatchObject({ ok: false, code: 'HTTP' });
+      expect(res).not.toHaveProperty('hintKey');
+    } finally {
+      other();
     }
   });
 });

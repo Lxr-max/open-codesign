@@ -1,15 +1,15 @@
 cask "open-codesign" do
-  version "0.2.0"
+  version "0.3.0"
 
   on_arm do
     url "https://github.com/OpenCoworkAI/open-codesign/releases/download/v#{version}/open-codesign-#{version}-arm64.dmg",
         verified: "github.com/OpenCoworkAI/open-codesign/"
-    sha256 "b7eea9a0d9dfba6a226d337f8cfa0b08ed7db1fb7533b982ab28e9d47b637510"
+    sha256 "56385717cd719d361734d65c75caf0b84ad73791cf04500d499ca0cfd2ca22bb"
   end
   on_intel do
     url "https://github.com/OpenCoworkAI/open-codesign/releases/download/v#{version}/open-codesign-#{version}-x64.dmg",
         verified: "github.com/OpenCoworkAI/open-codesign/"
-    sha256 "1d6aed2d1c57ee1ee283d779b05e9816e1eca5e10ef02111e9036c345921c97e"
+    sha256 "894aa01c31c4947fe6a857ff40e1744dd604827e23291642b172b36035718d4e"
   end
 
   name "Open CoDesign"

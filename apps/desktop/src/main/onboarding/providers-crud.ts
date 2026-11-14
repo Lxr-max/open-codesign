@@ -1,10 +1,12 @@
 import {
   BUILTIN_PROVIDERS,
+  CHATGPT_CODEX_PROVIDER_ID,
   CodesignError,
   type Config,
   ERROR_CODES,
   hydrateConfig,
   isSupportedOnboardingProvider,
+  mergeDiscoveryMode,
   modelsEndpointUrl,
   type OnboardingState,
   type ProviderEntry,
@@ -88,6 +90,7 @@ export async function runSetProviderAndModels(
     activeModel: nextActiveModel,
     secrets: nextSecrets,
     providers: nextProviders,
+    ...(cachedConfig?.webSearch !== undefined ? { webSearch: cachedConfig.webSearch } : {}),
     ...(cachedConfig?.designSystem !== undefined
       ? { designSystem: cachedConfig.designSystem }
       : {}),
@@ -137,8 +140,9 @@ export async function runDeleteProvider(raw: unknown): Promise<ProviderRow[]> {
       version: 3,
       activeProvider: '',
       activeModel: '',
-      secrets: {},
+      secrets: nextSecrets,
       providers: nextProviders,
+      ...(cfg.webSearch !== undefined ? { webSearch: cfg.webSearch } : {}),
       ...(cfg.designSystem !== undefined ? { designSystem: cfg.designSystem } : {}),
     });
     await writeConfig(emptyNext);
@@ -152,6 +156,7 @@ export async function runDeleteProvider(raw: unknown): Promise<ProviderRow[]> {
     activeModel: modelPrimary,
     secrets: nextSecrets,
     providers: nextProviders,
+    ...(cfg.webSearch !== undefined ? { webSearch: cfg.webSearch } : {}),
     ...(cfg.designSystem !== undefined ? { designSystem: cfg.designSystem } : {}),
   });
   await writeConfig(next);
@@ -193,6 +198,7 @@ export async function runSetActiveProvider(raw: unknown): Promise<OnboardingStat
     activeModel,
     secrets: cfg.secrets,
     providers: cfg.providers,
+    ...(cfg.webSearch !== undefined ? { webSearch: cfg.webSearch } : {}),
     ...(cfg.designSystem !== undefined ? { designSystem: cfg.designSystem } : {}),
   });
   await writeConfig(next);
@@ -204,6 +210,13 @@ export async function runAddCustomProvider(
   input: AddCustomProviderInput,
 ): Promise<OnboardingState> {
   const cachedConfig = getCachedConfig();
+  if (
+    isSupportedOnboardingProvider(input.id) ||
+    input.id === CHATGPT_CODEX_PROVIDER_ID ||
+    cachedConfig?.providers[input.id]?.builtin
+  ) {
+    throw new CodesignError('Cannot replace a built-in provider', ERROR_CODES.IPC_BAD_INPUT);
+  }
   const entry: ProviderEntry = {
     id: input.id,
     name: input.name,
@@ -211,14 +224,24 @@ export async function runAddCustomProvider(
     wire: input.wire,
     baseUrl: input.baseUrl,
     defaultModel: input.defaultModel,
+    ...(input.requiresApiKey !== undefined ? { requiresApiKey: input.requiresApiKey } : {}),
     ...(input.httpHeaders !== undefined ? { httpHeaders: input.httpHeaders } : {}),
     ...(input.queryParams !== undefined ? { queryParams: input.queryParams } : {}),
     ...(input.envKey !== undefined ? { envKey: input.envKey } : {}),
     ...(input.tlsRejectUnauthorized === true ? { tlsRejectUnauthorized: true } : {}),
+    ...(input.modelDiscoveryMode !== undefined
+      ? { capabilities: mergeDiscoveryMode(undefined, input.modelDiscoveryMode) }
+      : {}),
   };
-  const secretRef = buildSecretRef(input.apiKey);
   const nextProviders = { ...(cachedConfig?.providers ?? {}), [entry.id]: entry };
-  const nextSecrets = { ...(cachedConfig?.secrets ?? {}), [entry.id]: secretRef };
+  const nextSecrets = { ...(cachedConfig?.secrets ?? {}) };
+  if (input.apiKey.trim().length > 0) {
+    nextSecrets[entry.id] = buildSecretRef(input.apiKey.trim());
+  } else if (input.requiresApiKey === false) {
+    delete nextSecrets[entry.id];
+  } else {
+    throw new CodesignError('apiKey must be a non-empty string', ERROR_CODES.IPC_BAD_INPUT);
+  }
   const shouldActivate = input.setAsActive || cachedConfig === null;
   const next = hydrateConfig({
     version: 3,
@@ -228,6 +251,7 @@ export async function runAddCustomProvider(
       : (cachedConfig?.activeModel ?? input.defaultModel),
     secrets: nextSecrets,
     providers: nextProviders,
+    ...(cachedConfig?.webSearch !== undefined ? { webSearch: cachedConfig.webSearch } : {}),
     ...(cachedConfig?.designSystem !== undefined
       ? { designSystem: cachedConfig.designSystem }
       : {}),
@@ -251,6 +275,18 @@ export async function runUpdateProvider(input: UpdateProviderInput): Promise<Onb
   if (existing === undefined) {
     throw new CodesignError(`Provider "${input.id}" not found`, ERROR_CODES.IPC_BAD_INPUT);
   }
+  if (
+    input.requiresApiKey !== undefined &&
+    (existing.builtin ||
+      isSupportedOnboardingProvider(input.id) ||
+      input.id === CHATGPT_CODEX_PROVIDER_ID) &&
+    input.requiresApiKey !== !isKeylessProviderAllowed(input.id, existing)
+  ) {
+    throw new CodesignError(
+      'Cannot change authentication mode for a built-in provider',
+      ERROR_CODES.IPC_BAD_INPUT,
+    );
+  }
   const updated: ProviderEntry = {
     ...existing,
     ...(input.name !== undefined ? { name: input.name } : {}),
@@ -260,6 +296,14 @@ export async function runUpdateProvider(input: UpdateProviderInput): Promise<Onb
     ...(input.queryParams !== undefined ? { queryParams: input.queryParams } : {}),
     ...(input.wire !== undefined ? { wire: input.wire } : {}),
   };
+  if (input.requiresApiKey !== undefined && !existing.builtin) {
+    updated.requiresApiKey = input.requiresApiKey;
+    // An explicit auth choice replaces an imported keyless capability override.
+    if (updated.capabilities !== undefined) {
+      const { supportsKeyless: _keyless, ...capabilities } = updated.capabilities;
+      updated.capabilities = capabilities;
+    }
+  }
   // reasoningLevel has a tri-state semantic: undefined means "untouched",
   // null means "explicitly clear the override so core picks the default",
   // a string level means "set it". Handle separately from the spread above
@@ -269,6 +313,11 @@ export async function runUpdateProvider(input: UpdateProviderInput): Promise<Onb
   } else if (input.reasoningLevel !== undefined) {
     updated.reasoningLevel = input.reasoningLevel;
   }
+  if (input.contextWindow === null) {
+    updated.contextWindow = undefined;
+  } else if (input.contextWindow !== undefined) {
+    updated.contextWindow = input.contextWindow;
+  }
   // tlsRejectUnauthorized tri-state: null clears the field (back to strict
   // TLS), true persists the opt-out, false also clears (omit-when-default).
   // Builtin providers force-ignore the flag at the connect / generate paths,
@@ -277,6 +326,9 @@ export async function runUpdateProvider(input: UpdateProviderInput): Promise<Onb
     updated.tlsRejectUnauthorized = undefined;
   } else if (input.tlsRejectUnauthorized === true) {
     updated.tlsRejectUnauthorized = true;
+  }
+  if (input.modelDiscoveryMode !== undefined) {
+    updated.capabilities = mergeDiscoveryMode(updated.capabilities, input.modelDiscoveryMode);
   }
   // Secret rotation: only touch secrets when the caller explicitly supplied
   // an apiKey field. Empty string clears the secret (keyless providers);
@@ -297,12 +349,19 @@ export async function runUpdateProvider(input: UpdateProviderInput): Promise<Onb
       nextSecrets = { ...cfg.secrets, [input.id]: buildSecretRef(trimmed) };
     }
   }
+  if (input.requiresApiKey === true && nextSecrets[input.id] === undefined) {
+    throw new CodesignError(
+      `No API key stored for provider "${input.id}". Enter an API key to require authentication.`,
+      ERROR_CODES.PROVIDER_KEY_MISSING,
+    );
+  }
   const next = hydrateConfig({
     version: 3,
     activeProvider: cfg.activeProvider,
     activeModel: cfg.activeModel,
     secrets: nextSecrets,
     providers: { ...cfg.providers, [input.id]: updated },
+    ...(cfg.webSearch !== undefined ? { webSearch: cfg.webSearch } : {}),
     ...(cfg.designSystem !== undefined ? { designSystem: cfg.designSystem } : {}),
   });
   await writeConfig(next);

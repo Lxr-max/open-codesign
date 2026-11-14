@@ -17,7 +17,7 @@ import { getLogger } from './logger';
 
 const logger = getLogger('preferences-ipc');
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 // v1 → v2: raise the abandoned 120s timeout default (which aborted real
 // agentic runs mid-loop) to 600s. Values that happen to equal the old
 // default are treated as unmigrated defaults, not user intent.
@@ -25,6 +25,10 @@ const V1_DEFAULT_TIMEOUT_SEC = 120;
 // v2 -> v3: 600s still clips slower long-form multi-turn runs, so the default
 // moves to 1200s.
 const V2_DEFAULT_TIMEOUT_SEC = 600;
+// v9 -> v10: system notifications. Installs upgraded from an earlier schema
+// keep them off until the user turns them on in Settings -> Advanced; new
+// installs start with them on.
+const SYSTEM_NOTIFICATIONS_SCHEMA_VERSION = 10;
 
 function prefsFile(): string {
   return join(configDir(), 'preferences.json');
@@ -47,6 +51,8 @@ export interface Preferences {
   /** HTTP/HTTPS proxy URL applied to Chromium and Node outbound traffic.
    *  Empty string disables the proxy. */
   proxyUrl: string;
+  /** Notify through the OS when a design run ends or asks a question while the window is in the background. */
+  systemNotifications: boolean;
 }
 
 interface PreferencesFile extends Preferences {
@@ -67,6 +73,7 @@ const DEFAULTS: Preferences = {
   workspaceMemoryAutoUpdate: true,
   userMemoryAutoUpdate: false,
   proxyUrl: '',
+  systemNotifications: true,
 };
 
 const PREFERENCE_UPDATE_FIELDS = [
@@ -79,6 +86,7 @@ const PREFERENCE_UPDATE_FIELDS = [
   'workspaceMemoryAutoUpdate',
   'userMemoryAutoUpdate',
   'proxyUrl',
+  'systemNotifications',
 ] as const;
 
 function assertKnownPreferenceFields(r: Record<string, unknown>): void {
@@ -116,8 +124,9 @@ function readPersistedSchema(r: Record<string, unknown>): number {
 function readPersistedTimeout(r: Record<string, unknown>): number {
   const value = r['generationTimeoutSec'];
   if (value === undefined) return DEFAULTS.generationTimeoutSec;
-  if (typeof value !== 'number' || value <= 0) {
-    failInvalidPersistedPreference('generationTimeoutSec must be a positive number');
+  // 0 disables the generation timeout (overnight local models).
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    failInvalidPersistedPreference('generationTimeoutSec must be a non-negative number');
   }
   return value;
 }
@@ -137,7 +146,8 @@ function readPersistedBoolean(
     | 'checkForUpdatesOnStartup'
     | 'memoryEnabled'
     | 'workspaceMemoryAutoUpdate'
-    | 'userMemoryAutoUpdate',
+    | 'userMemoryAutoUpdate'
+    | 'systemNotifications',
   defaultValue: boolean,
 ): boolean {
   const value = r[key];
@@ -224,6 +234,11 @@ function parsePersistedFile(rawJson: unknown): Preferences {
       DEFAULTS.userMemoryAutoUpdate,
     ),
     proxyUrl: readPersistedString(parsed, 'proxyUrl', DEFAULTS.proxyUrl),
+    systemNotifications: readPersistedBoolean(
+      parsed,
+      'systemNotifications',
+      persistedSchema < SYSTEM_NOTIFICATIONS_SCHEMA_VERSION ? false : DEFAULTS.systemNotifications,
+    ),
   };
 }
 
@@ -299,9 +314,9 @@ function readUpdateChannel(r: Record<string, unknown>): UpdateChannel | undefine
 function readTimeoutSec(r: Record<string, unknown>): number | undefined {
   const value = r['generationTimeoutSec'];
   if (value === undefined) return undefined;
-  if (typeof value !== 'number' || value <= 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     throw new CodesignError(
-      'generationTimeoutSec must be a positive number',
+      'generationTimeoutSec must be a non-negative number',
       ERROR_CODES.IPC_BAD_INPUT,
     );
   }
@@ -328,6 +343,15 @@ function readMemoryAutoUpdate(
   if (value === undefined) return undefined;
   if (typeof value !== 'boolean') {
     throw new CodesignError(`${key} must be a boolean`, ERROR_CODES.IPC_BAD_INPUT);
+  }
+  return value;
+}
+
+function readSystemNotifications(r: Record<string, unknown>): boolean | undefined {
+  const value = r['systemNotifications'];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new CodesignError('systemNotifications must be a boolean', ERROR_CODES.IPC_BAD_INPUT);
   }
   return value;
 }
@@ -389,6 +413,8 @@ function parsePreferences(raw: unknown): Partial<Preferences> {
   if (userMemoryAutoUpdate !== undefined) out.userMemoryAutoUpdate = userMemoryAutoUpdate;
   const proxyUrl = readProxyUrl(r);
   if (proxyUrl !== undefined) out.proxyUrl = proxyUrl;
+  const systemNotifications = readSystemNotifications(r);
+  if (systemNotifications !== undefined) out.systemNotifications = systemNotifications;
   return out;
 }
 
