@@ -10,8 +10,9 @@ import { showBootDialog, writeBootErrorSync } from './boot-fallback';
 import { migrateStaleCodexEntryIfNeeded, registerCodexOAuthIpc } from './codex-oauth-ipc';
 import { configDir } from './config';
 import { registerConnectionIpc } from './connection-ipc';
+import { registerDesignSystemLibraryIpc } from './design-system-library-ipc';
 import { registerDiagnosticsIpc } from './diagnostics-ipc';
-import { app, BrowserWindow, clipboard, dialog, shell } from './electron-runtime';
+import { app, BACKGROUND_DEBUG, BrowserWindow, clipboard, dialog, shell } from './electron-runtime';
 import { ensureUserTemplates, resolveBundledTemplatesDir } from './ensure-user-templates';
 import { registerExporterIpc } from './exporter-ipc';
 import { registerImageGenerationSettingsIpc } from './image-generation-settings';
@@ -36,7 +37,7 @@ import {
   registerSnapshotsUnavailableIpc,
   registerWorkspaceIpc,
 } from './snapshots-ipc';
-import { initStorageSettings } from './storage-settings';
+import { getStorageRecoveryWarnings, initStorageSettings } from './storage-settings';
 import { getUpdateErrorMessage, isMissingUpdateMetadataError } from './update-errors';
 import { registerWorkspaceProtocolHandler, registerWorkspaceScheme } from './workspace-protocol';
 
@@ -95,7 +96,9 @@ function createWindow(): void {
     backgroundColor: BRAND.backgroundColor,
     icon: join(__dirname, '../../resources/icon.png'),
     show: false,
+    ...(BACKGROUND_DEBUG ? { focusable: false, skipTaskbar: true } : {}),
     webPreferences: {
+      ...(BACKGROUND_DEBUG ? { offscreen: true, backgroundThrottling: false } : {}),
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
       contextIsolation: true,
@@ -103,7 +106,23 @@ function createWindow(): void {
     },
   });
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show());
+  // On software-rendered systems (e.g. VMware SVGA → SwiftShader fallback)
+  // the compositor never produces a first frame for a hidden window, so
+  // ready-to-show never fires and the window stays invisible forever while
+  // the app runs healthy underneath. The fallback timer shows the window
+  // anyway; on healthy systems ready-to-show fires well within 2s and
+  // startup stays flicker-free.
+  const showFallback = setTimeout(() => {
+    if (BACKGROUND_DEBUG) return;
+    if (mainWindow !== null && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  }, 2000);
+  mainWindow.on('ready-to-show', () => {
+    clearTimeout(showFallback);
+    if (!BACKGROUND_DEBUG) mainWindow?.show();
+  });
+  mainWindow.on('closed', () => clearTimeout(showFallback));
   // Null the reference on close so stale IPC sends from async emitters
   // (autoUpdater, long-running generate runs) become clean no-ops rather
   // than throwing "Object has been destroyed" on a discarded webContents.
@@ -116,7 +135,7 @@ function createWindow(): void {
     // `codesign:v1:open-external`, otherwise any renderer path that triggers
     // a new-window event could coerce the main process into opening an
     // attacker-controlled URL.
-    if (isAllowedExternalUrl(url)) {
+    if (!BACKGROUND_DEBUG && isAllowedExternalUrl(url)) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -180,6 +199,17 @@ if (!IS_VITEST) {
   registerWorkspaceScheme();
 
   void app.whenReady().then(async () => {
+    const storageWarnings = getStorageRecoveryWarnings();
+    if (storageWarnings.length > 0 && !BACKGROUND_DEBUG) {
+      dialog.showMessageBoxSync({
+        type: 'warning',
+        title: 'Storage location needs attention / 请检查存储位置',
+        message:
+          'Open CoDesign is using default storage folders for this session. / Open CoDesign 本次启动将使用默认存储目录。',
+        detail: storageWarnings.join('\n\n'),
+        buttons: ['Continue / 继续'],
+      });
+    }
     // Extracted so the outer try/catch AND post-init listeners (whose callbacks
     // fire outside this block) can route failures through the same boot-fallback
     // path. Without this, a later createWindow() throw from app.on('activate')
@@ -224,7 +254,11 @@ if (!IS_VITEST) {
         app.quit();
         return;
       }
+      // Windows shows toasts only for the AppUserModelID on the installer's
+      // Start Menu shortcut, which electron-builder sets to the appId.
+      if (process.platform === 'win32') app.setAppUserModelId('ai.opencowork.codesign');
       app.on('second-instance', () => {
+        if (BACKGROUND_DEBUG) return;
         if (mainWindow) {
           if (mainWindow.isMinimized()) mainWindow.restore();
           mainWindow.focus();
@@ -247,9 +281,8 @@ if (!IS_VITEST) {
         });
       }
       // Seed `<userData>/templates/` from the bundled resources if it does
-      // not already exist. After the first boot the user owns the tree —
-      // edits to scaffolds, skills, brand-refs, frames, or design-skills
-      // survive upgrades, and deleting the folder re-seeds on next launch.
+      // not already exist. Known, unedited method skills receive guarded upgrades;
+      // custom skills and other user-owned resources retain their existing policy.
       const bootLog = getLogger('main:boot');
       const templatesSource = resolveBundledTemplatesDir(process.resourcesPath);
       const seeded = await ensureUserTemplates(app.getPath('userData'), templatesSource);
@@ -269,6 +302,7 @@ if (!IS_VITEST) {
       const diagnosticsDb: Database | null = dbResult.ok ? dbResult.db : null;
       if (dbResult.ok) {
         registerSnapshotsIpc(dbResult.db);
+        registerDesignSystemLibraryIpc(dbResult.db);
         registerWorkspaceIpc(dbResult.db, getMainWindow);
         registerWorkspaceProtocolHandler({
           db: dbResult.db,
@@ -286,7 +320,7 @@ if (!IS_VITEST) {
           message: dbResult.error.message,
           stack: dbResult.error.stack,
         });
-        if (IS_SMOKE_TEST) throw dbResult.error;
+        if (IS_SMOKE_TEST || BACKGROUND_DEBUG) throw dbResult.error;
         // Install stub handlers so renderer-side calls reject with a typed
         // SNAPSHOTS_UNAVAILABLE CodesignError instead of Electron's opaque
         // "No handler registered" rejection — see snapshots-ipc.ts.
@@ -316,12 +350,15 @@ if (!IS_VITEST) {
         app.quit();
         return;
       }
-      setupAutoUpdater(getMainWindow);
-      registerAppMenu();
+      if (!BACKGROUND_DEBUG) {
+        setupAutoUpdater(getMainWindow);
+        registerAppMenu();
+      }
       createWindow();
-      void scheduleStartupUpdateCheck();
+      if (!BACKGROUND_DEBUG) void scheduleStartupUpdateCheck();
 
       app.on('activate', () => {
+        if (BACKGROUND_DEBUG) return;
         if (BrowserWindow.getAllWindows().length === 0) {
           try {
             createWindow();
@@ -331,7 +368,7 @@ if (!IS_VITEST) {
         }
       });
     } catch (err) {
-      if (IS_SMOKE_TEST) {
+      if (IS_SMOKE_TEST || BACKGROUND_DEBUG) {
         process.stderr.write(
           `codesign smoke.fail ${err instanceof Error ? err.stack || err.message : String(err)}\n`,
         );

@@ -3,7 +3,7 @@ import { open, readFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { extname, isAbsolute } from 'node:path';
+import { extname, isAbsolute, relative as relativePath, sep } from 'node:path';
 import type { AttachmentContext, ProjectContext, ReferenceUrlContext } from '@open-codesign/core';
 import {
   CodesignError,
@@ -20,6 +20,7 @@ import {
   removeHtmlElementBlocks,
   stripHtmlTags,
 } from '@open-codesign/shared/html-utils';
+import type { DocumentTextLimits, OoxmlFormat } from './document-text';
 import { resolveSafeWorkspaceChildPath } from './workspace-reader';
 
 const TEXT_EXTS = new Set([
@@ -52,9 +53,62 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
+function sniffImageMimeType(buffer: Buffer): string | null {
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  if (
+    buffer.length >= 6 &&
+    (buffer.toString('ascii', 0, 6) === 'GIF87a' || buffer.toString('ascii', 0, 6) === 'GIF89a')
+  ) {
+    return 'image/gif';
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return 'image/bmp';
+  }
+  return null;
+}
+
 const MAX_ATTACHMENT_CHARS = 6_000;
 const MAX_TEXT_ATTACHMENT_BYTES = 256_000;
-const MAX_BINARY_ATTACHMENT_BYTES = 10_000_000; // 10MB - images get full read for data URL, non-image binary only needs filename
+const MAX_BINARY_ATTACHMENT_BYTES = 10_000_000; // 10MB - images get a full read for the data URL, Office documents a full read for their text; other binary files stay filename-only
+// Only MAX_ATTACHMENT_CHARS of a document reach the prompt, so these bound the work of reading it,
+// not what the model sees. They are the attachment's own numbers: the Files tab preview keeps its own.
+const DOCUMENT_ATTACHMENT_LIMITS: DocumentTextLimits = {
+  maxSections: 30,
+  maxParagraphs: 400,
+  maxLinesPerSlide: 40,
+  maxRowsPerSheet: 200,
+  maxCellsPerRow: 20,
+  maxLineChars: 500,
+  maxUnpackedBytes: 32 * 1024 * 1024,
+  markCuts: true,
+};
+const DOCUMENT_FORMATS: Record<string, OoxmlFormat> = {
+  '.docx': 'docx',
+  '.pptx': 'pptx',
+  '.xlsx': 'xlsx',
+};
 const MAX_URL_EXCERPT_CHARS = 1_200;
 const MAX_URL_RESPONSE_BYTES = 256_000;
 const MAX_REFERENCE_URL_REDIRECTS = 3;
@@ -473,13 +527,24 @@ async function openAttachment(
       candidates.push({ readPath: file.path, promptPath: file.path });
     }
   } else {
-    candidates.push({ readPath: file.path, promptPath: file.path });
+    const relative = workspaceRoot === undefined ? null : relativePath(workspaceRoot, file.path);
+    const ownedPromptPath =
+      relative !== null &&
+      relative.length > 0 &&
+      relative !== '..' &&
+      !relative.startsWith(`..${sep}`) &&
+      !isAbsolute(relative)
+        ? normalizePromptPath(relative)
+        : file.name;
+    // An explicit existing attachment wins over a same-named workspace file.
+    // Keep host paths out of prompt text without changing which bytes are read.
+    candidates.push({ readPath: file.path, promptPath: ownedPromptPath });
     if (workspaceRoot !== undefined) {
-      const promptPath = workspaceAttachmentRelativePath(file.path);
-      if (promptPath !== null) {
+      const rebasedPath = workspaceAttachmentRelativePath(file.path);
+      if (rebasedPath !== null) {
         candidates.push({
-          readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, promptPath),
-          promptPath,
+          readPath: await resolveSafeWorkspaceChildPath(workspaceRoot, rebasedPath),
+          promptPath: rebasedPath,
         });
       }
     }
@@ -495,6 +560,87 @@ async function openAttachment(
   }
 
   throw lastError;
+}
+
+/**
+ * A DOCX, PPTX or XLSX attachment as text. A file that cannot be read as that format fails the
+ * attachment, with a message that names the file, and so the send, before any model request:
+ * the model is never left to plan around a file it did not read. Formats this does not read
+ * (PDF, the legacy binary Office formats) keep the filename note.
+ */
+async function readDocumentAttachment(
+  file: LocalInputFile,
+  workspaceRoot: string | undefined,
+  format: OoxmlFormat,
+): Promise<AttachmentContext> {
+  const label = format.toUpperCase();
+  let bytes: Buffer;
+  let promptPath = file.path;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    const opened = await openAttachment(file, workspaceRoot);
+    handle = opened.handle;
+    promptPath = opened.promptPath;
+    const { size } = await handle.stat();
+    if (size > MAX_BINARY_ATTACHMENT_BYTES) {
+      throw new CodesignError(
+        `Binary attachment "${file.name}" is too large (${size} bytes). Maximum is ${MAX_BINARY_ATTACHMENT_BYTES / 1_000_000}MB.`,
+        ERROR_CODES.ATTACHMENT_TOO_LARGE,
+      );
+    }
+    bytes = await handle.readFile();
+  } catch (error) {
+    if (error instanceof CodesignError) throw error;
+    throw new CodesignError(
+      `Failed to read attachment "${file.path}"`,
+      ERROR_CODES.ATTACHMENT_READ_FAILED,
+      { cause: error },
+    );
+  } finally {
+    await handle?.close();
+  }
+
+  // Loaded on first use: JSZip and the parsers are not needed until someone attaches a document.
+  const { DocumentTooLargeError, formatDocumentText, readOoxmlText } = await import(
+    './document-text'
+  );
+  let text: Awaited<ReturnType<typeof readOoxmlText>>;
+  try {
+    text = await readOoxmlText(bytes, format, DOCUMENT_ATTACHMENT_LIMITS);
+  } catch (error) {
+    if (error instanceof DocumentTooLargeError) {
+      throw new CodesignError(
+        `${label} attachment "${file.name}" holds more than ${DOCUMENT_ATTACHMENT_LIMITS.maxUnpackedBytes / (1024 * 1024)}MB of text once unpacked. Attach a smaller file.`,
+        ERROR_CODES.ATTACHMENT_TOO_LARGE,
+        { cause: error },
+      );
+    }
+    throw new CodesignError(
+      `Could not read "${file.name}" as a ${label} file.`,
+      ERROR_CODES.ATTACHMENT_READ_FAILED,
+      { cause: error },
+    );
+  }
+  if (text.missingPart !== null) {
+    throw new CodesignError(
+      `Could not read "${file.name}" as a ${label} file: it has no ${text.missingPart}.`,
+      ERROR_CODES.ATTACHMENT_READ_FAILED,
+    );
+  }
+
+  const full = cleanText(formatDocumentText(text, format), Number.MAX_SAFE_INTEGER);
+  if (full.length === 0) {
+    return { name: file.name, path: promptPath, note: `${label} file with no text in it.` };
+  }
+  const truncated = full.length > MAX_ATTACHMENT_CHARS;
+  return {
+    name: file.name,
+    path: promptPath,
+    excerpt: full.slice(0, MAX_ATTACHMENT_CHARS),
+    note: `Text extracted from a ${label} file; layout, images and charts are not included.${
+      truncated ? ` Excerpt truncated to the first ${MAX_ATTACHMENT_CHARS} characters.` : ''
+    }`,
+  };
 }
 
 async function readAttachment(
@@ -518,6 +664,10 @@ async function readAttachment(
       ERROR_CODES.ATTACHMENT_TOO_LARGE,
     );
   }
+
+  const documentFormat = DOCUMENT_FORMATS[extension];
+  if (documentFormat !== undefined)
+    return readDocumentAttachment(file, workspaceRoot, documentFormat);
 
   let buffer: Buffer;
   let handle: Awaited<ReturnType<typeof open>> | null = null;
@@ -543,7 +693,9 @@ async function readAttachment(
     }
 
     if (!looksText) {
-      if (imageMimeType) {
+      // Read the full binary when the extension is a known image OR the probe
+      // looks like image bytes (clipboard pastes sometimes lack a useful name).
+      if (imageMimeType || sniffImageMimeType(probe) !== null) {
         const length = Math.max(
           1,
           Math.min(file.size || MAX_BINARY_ATTACHMENT_BYTES, maxFileBytes),
@@ -583,13 +735,14 @@ async function readAttachment(
   }
 
   if (!isProbablyText(buffer, extension)) {
-    if (imageMimeType) {
+    const resolvedImageMime = sniffImageMimeType(buffer) ?? imageMimeType;
+    if (resolvedImageMime) {
       return {
         name: file.name,
         path: promptPath,
-        note: 'Image attachment metadata is available; visual pixels may only be available on vision-capable provider paths. If image content is unavailable, use the filename and user prompt as hints.',
-        mediaType: imageMimeType,
-        imageDataUrl: `data:${imageMimeType};base64,${buffer.toString('base64')}`,
+        note: 'Image bytes are embedded as multimodal content when the active model accepts image input; otherwise only the filename is available as a hint.',
+        mediaType: resolvedImageMime,
+        imageDataUrl: `data:${resolvedImageMime};base64,${buffer.toString('base64')}`,
       };
     }
     return {

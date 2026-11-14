@@ -17,13 +17,14 @@ type GetState = () => CodesignState;
 async function resolveDesignPreview(
   designId: string,
   snapshotSource: string | null,
+  isSystemEditor = false,
 ): Promise<WorkspacePreviewReadResult | null> {
   if (!window.codesign) return null;
   return resolveDesignPreviewSource({
     designId,
     snapshotSource,
     read: window.codesign.files?.read,
-    preferSnapshotSource: true,
+    preferSnapshotSource: !isSystemEditor,
   });
 }
 
@@ -68,6 +69,7 @@ function buildSelectedDesignState(
     lastPromptInput: null,
     designsViewOpen: false,
     chatMessages: [],
+    chatViewEpoch: state.chatViewEpoch + 1,
     chatLoaded: false,
     pendingToolCalls: [],
     comments: [],
@@ -101,6 +103,7 @@ function buildFreshDesignState(state: CodesignState, designId: string): Partial<
     lastPromptInput: null,
     designsViewOpen: false,
     chatMessages: [],
+    chatViewEpoch: state.chatViewEpoch + 1,
     chatLoaded: false,
     pendingToolCalls: [],
     comments: [],
@@ -114,6 +117,21 @@ function buildFreshDesignState(state: CodesignState, designId: string): Partial<
 }
 
 export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActions {
+  let initializingDesign: Promise<void> | null = null;
+
+  async function initializeCurrentDesign(): Promise<void> {
+    await get().loadDesigns();
+    const designs = get().designs.filter((d) => !d.designSystemId);
+    if (get().currentDesignId !== null) return;
+
+    if (designs.length > 0) {
+      const first = designs[0];
+      if (first) await get().switchDesign(first.id);
+      return;
+    }
+    await get().createNewDesign();
+  }
+
   return {
     async loadDesigns() {
       if (!window.codesign) return;
@@ -134,33 +152,43 @@ export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActi
 
     async ensureCurrentDesign() {
       if (!window.codesign) return;
-      await get().loadDesigns();
-      const designs = get().designs;
-      if (get().currentDesignId !== null) return;
-
-      if (designs.length > 0) {
-        const first = designs[0];
-        if (first) await get().switchDesign(first.id);
-        return;
+      // Concurrent boot effects must share creation until the design is selected.
+      if (initializingDesign === null) {
+        initializingDesign = initializeCurrentDesign().finally(() => {
+          initializingDesign = null;
+        });
       }
-      // No designs exist yet — create the first one silently. The user can
-      // rename it later or just send a prompt and we'll auto-name it.
-      await get().createNewDesign();
+      await initializingDesign;
     },
 
-    openNewDesignDialog() {
-      set({ newDesignDialogOpen: true });
+    openNewDesignDialog(designSystemId) {
+      set({ newDesignDialogOpen: true, selectedLibrarySystemId: designSystemId ?? null });
     },
     closeNewDesignDialog() {
-      set({ newDesignDialogOpen: false });
+      set({ newDesignDialogOpen: false, selectedLibrarySystemId: null });
     },
 
-    async createNewDesign(workspacePath?: string | null) {
+    async createNewDesign(
+      workspacePath?: string | null,
+      demoInputId?: string,
+      designSystemId?: string,
+    ) {
       if (!window.codesign) return null;
       const name = nextUntitledDesignName(get().designs);
       try {
-        const design = await window.codesign.snapshots.createDesign(name, workspacePath);
+        const design =
+          designSystemId !== undefined
+            ? await window.codesign.snapshots.createDesign(
+                name,
+                workspacePath,
+                demoInputId,
+                designSystemId,
+              )
+            : demoInputId === undefined
+              ? await window.codesign.snapshots.createDesign(name, workspacePath)
+              : await window.codesign.snapshots.createDesign(name, workspacePath, demoInputId);
         set((state) => buildFreshDesignState(state, design.id));
+        void get().syncActiveMessages(design.id);
         await get().loadDesigns();
         void get().loadChatForCurrentDesign();
         void get().loadCommentsForCurrentDesign();
@@ -178,6 +206,7 @@ export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActi
 
     async switchDesign(id: string) {
       if (!window.codesign) return;
+      void get().syncActiveMessages(id);
       const state = get();
       if (state.currentDesignId === id) {
         set({ designsViewOpen: false });
@@ -186,7 +215,11 @@ export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActi
             const snapshots = await window.codesign?.snapshots.list(id);
             if (!snapshots || get().currentDesignId !== id) return;
             const latest = snapshots[0] ?? null;
-            const fresh = await resolveDesignPreview(id, latest ? latest.artifactSource : null);
+            const fresh = await resolveDesignPreview(
+              id,
+              latest ? latest.artifactSource : null,
+              Boolean(get().designs.find((d) => d.id === id)?.designSystemId),
+            );
             if (fresh !== null && fresh.content !== get().previewSource) {
               const refreshed = recordPreviewSourceInPool(
                 get().previewSourceByDesign,
@@ -250,7 +283,11 @@ export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActi
             const snapshots = await window.codesign?.snapshots.list(id);
             if (!snapshots || get().currentDesignId !== id) return;
             const latest = snapshots[0] ?? null;
-            const fresh = await resolveDesignPreview(id, latest ? latest.artifactSource : null);
+            const fresh = await resolveDesignPreview(
+              id,
+              latest ? latest.artifactSource : null,
+              Boolean(get().designs.find((d) => d.id === id)?.designSystemId),
+            );
             if (fresh !== null && fresh.content !== get().previewSource) {
               const refreshed = recordPreviewSourceInPool(
                 get().previewSourceByDesign,
@@ -294,7 +331,11 @@ export function makeDesignsSlice(set: SetState, get: GetState): DesignsSliceActi
           const snapshots = await window.codesign?.snapshots.list(id);
           if (!snapshots || get().currentDesignId !== id) return;
           const latest = snapshots[0] ?? null;
-          const source = await resolveDesignPreview(id, latest ? latest.artifactSource : null);
+          const source = await resolveDesignPreview(
+            id,
+            latest ? latest.artifactSource : null,
+            Boolean(get().designs.find((d) => d.id === id)?.designSystemId),
+          );
           if (get().currentDesignId !== id) return;
           const refreshed = recordPreviewSourceInPool(
             get().previewSourceByDesign,

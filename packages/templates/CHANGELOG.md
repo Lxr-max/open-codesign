@@ -1,5 +1,63 @@
 # @open-codesign/templates
 
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [c3d2ff3]
+- Updated dependencies [89fe5cd]
+- Updated dependencies [029128d]
+- Updated dependencies [0d3d63e]
+- Updated dependencies [a63feb5]
+- Updated dependencies [761b3b8]
+- Updated dependencies [3b03e7a]
+- Updated dependencies [e24d1f1]
+- Updated dependencies [24815f3]
+- Updated dependencies [6799d55]
+- Updated dependencies [634c1b7]
+- Updated dependencies [c9757a0]
+- Updated dependencies [75f1e22]
+- Updated dependencies [9574745]
+- Updated dependencies [e331e69]
+- Updated dependencies [856dba8]
+- Updated dependencies [ec7f76d]
+- Updated dependencies [b7a0090]
+- Updated dependencies [c9757a0]
+- Updated dependencies [719d089]
+- Updated dependencies [c7b0f23]
+- Updated dependencies [143cf96]
+- Updated dependencies [4cf3393]
+- Updated dependencies [787a8e4]
+- Updated dependencies [09f21c3]
+- Updated dependencies [5f6036b]
+  - @open-codesign/shared@0.3.0
+  - @open-codesign/i18n@0.2.3
+
+## 0.1.7
+
+### Patch Changes
+
+- a77bb4a: Add three original local-input demo packs, localized feature tags and inspectable
+  file lists to Examples. Seed references lazily into a fresh workspace before
+  prefilling the prompt, without overwriting existing files or automatically
+  submitting a generation.
+- Updated dependencies [a77bb4a]
+- Updated dependencies [c8a179f]
+- Updated dependencies [729e356]
+- Updated dependencies [631143d]
+- Updated dependencies [f2a9dbb]
+- Updated dependencies [71dbd2f]
+- Updated dependencies [a8de894]
+- Updated dependencies [d199c75]
+- Updated dependencies [a3a08e6]
+- Updated dependencies [778ee51]
+- Updated dependencies [346282c]
+- Updated dependencies [729e356]
+- Updated dependencies [ef5677c]
+- Updated dependencies [729e356]
+  - @open-codesign/i18n@0.2.2
+  - @open-codesign/shared@0.2.2
+
 ## 0.1.6
 
 ### Patch Changes

@@ -23,6 +23,7 @@ export const DesignV1 = z.object({
   thumbnailText: z.string().nullable().default(null),
   deletedAt: z.string().nullable().default(null),
   workspacePath: z.string().nullable().default(null),
+  designSystemId: z.string().optional(),
   workspaceMode: z.enum(['blank-canvas', 'work-on-project']).optional(),
   previewMode: z.enum(['managed-file', 'connected-url', 'external-app', 'none']).optional(),
   previewUrl: z.string().nullable().optional(),
@@ -166,6 +167,7 @@ export const CommentRowV1 = z.object({
   /** v2 enrichment — parent element's outerHTML (truncated). Optional so
    *  pre-v2 rows still parse without it. */
   parentOuterHTML: z.string().optional(),
+  sourcePath: z.string().min(1).optional(),
 });
 export type CommentRow = z.infer<typeof CommentRowV1>;
 
@@ -180,6 +182,7 @@ export interface CommentCreateInput {
   text: string;
   scope?: CommentScope;
   parentOuterHTML?: string;
+  sourcePath?: string;
 }
 
 export interface CommentUpdateInput {

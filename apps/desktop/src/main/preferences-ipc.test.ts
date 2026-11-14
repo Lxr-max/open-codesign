@@ -66,6 +66,7 @@ describe('readPersisted()', () => {
       workspaceMemoryAutoUpdate: true,
       userMemoryAutoUpdate: false,
       proxyUrl: '',
+      systemNotifications: true,
     });
   });
 
@@ -115,6 +116,15 @@ describe('readPersisted()', () => {
       code: ERROR_CODES.PREFERENCES_READ_FAIL,
       message: expect.stringContaining('generationTimeoutSec'),
     });
+  });
+
+  it.each([
+    0, 21600, 43200, 86400,
+  ])('preserves a persisted generation timeout of %s seconds', async (generationTimeoutSec) => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, updateChannel: 'stable', generationTimeoutSec }),
+    );
+    await expect(readPersisted()).resolves.toMatchObject({ generationTimeoutSec });
   });
 
   it('ignores unknown fields in persisted preferences from stale local builds', async () => {
@@ -241,7 +251,7 @@ describe('readPersisted()', () => {
       schemaVersion: number;
       diagnosticsLastReadTs: number;
     };
-    expect(written.schemaVersion).toBe(9);
+    expect(written.schemaVersion).toBe(10);
     expect(written.diagnosticsLastReadTs).toBe(result.diagnosticsLastReadTs);
     expect(written.diagnosticsLastReadTs).toBeGreaterThanOrEqual(before);
     expect(written.diagnosticsLastReadTs).toBeLessThanOrEqual(after);
@@ -254,6 +264,9 @@ describe('preferences memory schema fields', () => {
   const handlers: Record<string, (...args: any[]) => unknown> = {};
 
   beforeEach(async () => {
+    readFileMock.mockReset();
+    writeFileMock.mockReset();
+    writeFileMock.mockImplementation(async () => {});
     for (const key of Object.keys(handlers)) delete handlers[key];
     const { ipcMain } = await import('electron');
     vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => {
@@ -290,6 +303,39 @@ describe('preferences memory schema fields', () => {
     ).rejects.toThrow(/unsupported field/);
     expect(readFileMock).toHaveBeenCalledTimes(readCalls);
     expect(writeFileMock).toHaveBeenCalledTimes(writeCalls);
+  });
+
+  it.each([
+    0, 21600, 43200, 86400,
+  ])('round-trips a generation timeout of %s seconds through preferences:v1:update', async (generationTimeoutSec) => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, generationTimeoutSec: 1200 }),
+    );
+    const updated = await (
+      handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>
+    )(null, { generationTimeoutSec });
+    expect(updated).toMatchObject({ generationTimeoutSec });
+
+    const lastCall = writeFileMock.mock.calls.at(-1);
+    if (!lastCall) throw new Error('writeFile was not called');
+    expect(JSON.parse(lastCall[1])).toMatchObject({ schemaVersion: 10, generationTimeoutSec });
+    readFileMock.mockResolvedValueOnce(lastCall[1]);
+    await expect(readPersisted()).resolves.toMatchObject({ generationTimeoutSec });
+  });
+
+  it.each([
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])('rejects an invalid generation timeout of %s before accessing preferences', async (generationTimeoutSec) => {
+    await expect(
+      (handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>)(null, {
+        generationTimeoutSec,
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.IPC_BAD_INPUT });
+    expect(readFileMock).not.toHaveBeenCalled();
+    expect(writeFileMock).not.toHaveBeenCalled();
   });
 
   it('round-trips dismissedUpdateVersion through preferences:v1:update', async () => {
@@ -361,7 +407,7 @@ describe('preferences memory schema fields', () => {
       workspaceMemoryAutoUpdate: boolean;
       userMemoryAutoUpdate: boolean;
     };
-    expect(written.schemaVersion).toBe(9);
+    expect(written.schemaVersion).toBe(10);
     expect(written.memoryEnabled).toBe(false);
     expect(written.workspaceMemoryAutoUpdate).toBe(false);
     expect(written.userMemoryAutoUpdate).toBe(true);
@@ -401,6 +447,66 @@ describe('preferences memory schema fields', () => {
         proxyUrl: 42,
       }),
     ).rejects.toThrow(/proxyUrl must be a string/);
+  });
+
+  it('leaves system notifications off for installs upgraded from an earlier schema', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 9, diagnosticsLastReadTs: 1, proxyUrl: '' }),
+    );
+
+    const prefs = await readPersisted();
+    expect(prefs.systemNotifications).toBe(false);
+  });
+
+  it('keeps an upgraded install opted out when another preference is saved', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 9, diagnosticsLastReadTs: 1, proxyUrl: '' }),
+    );
+    await (handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>)(
+      null,
+      { proxyUrl: 'http://127.0.0.1:7890' },
+    );
+
+    const lastCall = writeFileMock.mock.calls.at(-1);
+    if (!lastCall) throw new Error('writeFile was not called');
+    const written = JSON.parse(lastCall[1] as string) as {
+      schemaVersion: number;
+      systemNotifications: boolean;
+    };
+    expect(written.schemaVersion).toBe(10);
+    expect(written.systemNotifications).toBe(false);
+  });
+
+  it('round-trips systemNotifications through preferences:v1:update', async () => {
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, diagnosticsLastReadTs: 1, systemNotifications: true }),
+    );
+    const updated = await (
+      handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>
+    )(null, { systemNotifications: false });
+
+    expect((updated as { systemNotifications: boolean }).systemNotifications).toBe(false);
+    const lastCall = writeFileMock.mock.calls.at(-1);
+    if (!lastCall) throw new Error('writeFile was not called');
+    const written = JSON.parse(lastCall[1] as string) as {
+      schemaVersion: number;
+      systemNotifications: boolean;
+    };
+    expect(written.schemaVersion).toBe(10);
+    expect(written.systemNotifications).toBe(false);
+  });
+
+  it('rejects non-boolean systemNotifications updates and persisted values', async () => {
+    await expect(
+      (handlers['preferences:v1:update'] as (_e: null, raw: unknown) => Promise<unknown>)(null, {
+        systemNotifications: 'yes',
+      }),
+    ).rejects.toThrow(/systemNotifications must be a boolean/);
+
+    readFileMock.mockResolvedValueOnce(
+      JSON.stringify({ schemaVersion: 10, diagnosticsLastReadTs: 1, systemNotifications: 1 }),
+    );
+    await expect(readPersisted()).rejects.toThrow(/systemNotifications must be a boolean/);
   });
 });
 
