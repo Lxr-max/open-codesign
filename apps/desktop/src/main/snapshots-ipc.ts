@@ -29,6 +29,7 @@ import {
   CommentContentExpectations,
   CommentKind,
   CommentRect,
+  ERROR_CODES,
 } from '@open-codesign/shared';
 import { withWorkspaceFileWriter } from '@open-codesign/shared/workspace-file-lock';
 import { isDemoInputId } from '@open-codesign/templates/demo-inputs';
@@ -1821,11 +1822,11 @@ export function registerWorkspaceIpc(db: Database, getWin: () => BrowserWindow |
       try {
         await openWorkspaceFolder(workspacePath);
       } catch (err) {
-        throw new CodesignError(
-          err instanceof Error ? err.message : 'Failed to open workspace folder',
-          'IPC_BAD_INPUT',
-          { cause: err instanceof Error ? err : undefined },
-        );
+        const message = err instanceof Error ? err.message : 'Failed to open workspace folder';
+        logger.warn('workspace.open.failed', { designId, message });
+        throw new CodesignError(message, ERROR_CODES.OPEN_PATH_FAILED, {
+          cause: err instanceof Error ? err : undefined,
+        });
       }
     },
   );

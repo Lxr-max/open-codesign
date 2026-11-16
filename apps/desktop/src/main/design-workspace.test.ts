@@ -1,3 +1,5 @@
+import { type ChildProcess, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +11,14 @@ import {
   initInMemoryDb,
   updateDesignWorkspace,
 } from './snapshots-db';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: vi.fn(),
+  };
+});
 
 vi.mock('electron', () => ({
   dialog: {
@@ -24,12 +34,15 @@ import {
   bindWorkspace,
   copyTrackedWorkspaceFiles,
   normalizeWorkspacePath,
+  OPEN_WORKSPACE_FOLDER_TIMEOUT_MS,
   openWorkspaceFolder,
   pickWorkspaceFolder,
+  XDG_OPEN_HANDOFF_MS,
 } from './design-workspace';
 
 const showOpenDialog = vi.mocked(dialog.showOpenDialog);
 const openPath = vi.mocked(shell.openPath);
+const spawnOpener = vi.mocked(spawn);
 
 const tempDirs: string[] = [];
 
@@ -64,9 +77,17 @@ async function writeWorkspaceFile(
   await writeFile(filePath, content, 'utf8');
 }
 
+function fakeOpener(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  child.unref = vi.fn();
+  return child;
+}
+
 afterEach(async () => {
+  vi.useRealTimers();
   showOpenDialog.mockReset();
   openPath.mockReset();
+  spawnOpener.mockReset();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -131,18 +152,134 @@ describe('pickWorkspaceFolder', () => {
 
 describe('openWorkspaceFolder', () => {
   it('opens the folder in the OS file manager', async () => {
-    openPath.mockResolvedValue('');
+    await withMockedPlatform('darwin', async () => {
+      openPath.mockResolvedValue('');
 
-    await expect(openWorkspaceFolder('/tmp/workspace')).resolves.toBeUndefined();
-    expect(openPath).toHaveBeenCalledWith('/tmp/workspace');
+      await expect(openWorkspaceFolder('/tmp/workspace')).resolves.toBeUndefined();
+      expect(openPath).toHaveBeenCalledWith('/tmp/workspace');
+      expect(spawnOpener).not.toHaveBeenCalled();
+    });
   });
 
   it('throws when Electron reports an open error', async () => {
-    openPath.mockResolvedValue('no application is associated');
+    await withMockedPlatform('darwin', async () => {
+      openPath.mockResolvedValue('no application is associated');
 
-    await expect(openWorkspaceFolder('/tmp/workspace')).rejects.toThrow(
-      'Failed to open workspace folder: no application is associated',
-    );
+      await expect(openWorkspaceFolder('/tmp/workspace')).rejects.toThrow(
+        'Failed to open workspace folder: no application is associated',
+      );
+    });
+  });
+
+  it('rejects a hung shell.openPath so the IPC handler can reply', async () => {
+    await withMockedPlatform('darwin', async () => {
+      vi.useFakeTimers();
+      openPath.mockReturnValue(new Promise(() => {}));
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      const assertion = expect(pending).rejects.toThrow(
+        'Failed to open workspace folder: The system file manager did not respond. The folder may still open in the background.',
+      );
+      await vi.advanceTimersByTimeAsync(OPEN_WORKSPACE_FOLDER_TIMEOUT_MS);
+      await assertion;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('opens a Linux folder with xdg-open instead of shell.openPath', async () => {
+    await withMockedPlatform('linux', async () => {
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      child.emit('spawn');
+      child.emit('exit', 0);
+
+      await expect(pending).resolves.toBeUndefined();
+      expect(spawnOpener).toHaveBeenCalledWith('xdg-open', ['/tmp/workspace'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      expect(openPath).not.toHaveBeenCalled();
+      expect(child.unref).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('reports an xdg-open failure instead of leaving the IPC channel open', async () => {
+    await withMockedPlatform('linux', async () => {
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      child.emit('exit', 2);
+
+      await expect(pending).rejects.toThrow(
+        'Failed to open workspace folder: The item does not exist',
+      );
+      expect(openPath).not.toHaveBeenCalled();
+    });
+  });
+
+  it('reports an xdg-open failure that arrives after the process starts', async () => {
+    await withMockedPlatform('linux', async () => {
+      vi.useFakeTimers();
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      child.emit('spawn');
+      child.emit('exit', 4);
+
+      await expect(pending).rejects.toThrow('Failed to open workspace folder: The action failed');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('reports a missing xdg-open binary', async () => {
+    await withMockedPlatform('linux', async () => {
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      child.emit('error', Object.assign(new Error('spawn xdg-open ENOENT'), { code: 'ENOENT' }));
+
+      await expect(pending).rejects.toThrow(
+        'Failed to open workspace folder: xdg-open was not found. Install xdg-utils or a file manager and try again.',
+      );
+    });
+  });
+
+  it('replies after a running xdg-open does not exit', async () => {
+    await withMockedPlatform('linux', async () => {
+      vi.useFakeTimers();
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      child.emit('spawn');
+      await vi.advanceTimersByTimeAsync(XDG_OPEN_HANDOFF_MS);
+
+      await expect(pending).resolves.toBeUndefined();
+      expect(openPath).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('rejects when Linux never starts the file manager', async () => {
+    await withMockedPlatform('linux', async () => {
+      vi.useFakeTimers();
+      const child = fakeOpener();
+      spawnOpener.mockReturnValue(child);
+
+      const pending = openWorkspaceFolder('/tmp/workspace');
+      const assertion = expect(pending).rejects.toThrow(
+        'Failed to open workspace folder: The system file manager did not respond. The folder may still open in the background.',
+      );
+      await vi.advanceTimersByTimeAsync(OPEN_WORKSPACE_FOLDER_TIMEOUT_MS);
+      await assertion;
+      expect(openPath).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });
 

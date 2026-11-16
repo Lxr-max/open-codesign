@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -33,11 +34,119 @@ export async function pickWorkspaceFolder(win: BrowserWindow): Promise<string | 
   return result.filePaths[0] ?? null;
 }
 
-export async function openWorkspaceFolder(p: string): Promise<void> {
-  const result = await shell.openPath(p);
-  if (result.length > 0) {
-    throw new Error(`Failed to open workspace folder: ${result}`);
+/**
+ * How long `snapshots:v1:workspace:open` waits for an opener that has not
+ * started. Electron's Linux `shell.openPath` can stay pending forever.
+ */
+export const OPEN_WORKSPACE_FOLDER_TIMEOUT_MS = 10_000;
+
+/** After xdg-open starts, how long to wait for a fast failure before replying. */
+export const XDG_OPEN_HANDOFF_MS = 1_000;
+
+const OPEN_WORKSPACE_UNRESPONSIVE =
+  'The system file manager did not respond. The folder may still open in the background.';
+
+const XDG_OPEN_ERRORS: Readonly<Record<number, string>> = {
+  1: 'Error in command line syntax',
+  2: 'The item does not exist',
+  3: 'A required tool could not be found',
+  4: 'The action failed',
+};
+
+export async function openWorkspaceFolder(folderPath: string): Promise<void> {
+  // Electron 41's Linux shell.openPath never settles. platform_util launches
+  // xdg-open with wait_for_exit=false and drops the native callback, and the
+  // XDG activation run loop can also block the main thread. Awaiting that
+  // promise inside snapshots:v1:workspace:open leaves the invoke reply unsent
+  // ("reply was never sent"). Launch xdg-open ourselves so this call always
+  // settles. Other platforms still use shell.openPath, with a timeout so a
+  // stuck opener cannot hold the channel.
+  const error =
+    process.platform === 'linux'
+      ? await openLinuxFolder(folderPath)
+      : await openPathWithTimeout(folderPath);
+  if (error.length > 0) {
+    throw new Error(`Failed to open workspace folder: ${error}`);
   }
+}
+
+function openPathWithTimeout(folderPath: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn('workspace.open.timeout', { platform: process.platform });
+      resolve(OPEN_WORKSPACE_UNRESPONSIVE);
+    }, OPEN_WORKSPACE_FOLDER_TIMEOUT_MS);
+  });
+  return Promise.race([shell.openPath(folderPath), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+function xdgOpenFailure(code: number | null): string {
+  if (code === null) return 'xdg-open was terminated before it finished';
+  const known = XDG_OPEN_ERRORS[code];
+  if (known !== undefined) return known;
+  return `xdg-open exited with code ${code}`;
+}
+
+function openLinuxFolder(folderPath: string): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (message: string) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(message);
+    };
+
+    let child: ChildProcess;
+    try {
+      child = spawn('xdg-open', [folderPath], { detached: true, stdio: 'ignore' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to launch xdg-open';
+      logger.warn('workspace.open.spawn_failed', { message });
+      finish(message);
+      return;
+    }
+    child.unref();
+
+    timer = setTimeout(() => {
+      logger.warn('workspace.open.timeout', { platform: 'linux' });
+      finish(OPEN_WORKSPACE_UNRESPONSIVE);
+    }, OPEN_WORKSPACE_FOLDER_TIMEOUT_MS);
+
+    child.once('spawn', () => {
+      if (settled) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        // Some file managers keep xdg-open alive after the folder is shown.
+        // The process started, so the IPC handler must reply instead of waiting
+        // for an exit that may never come.
+        logger.info('workspace.open.handed_off', { platform: 'linux' });
+        finish('');
+      }, XDG_OPEN_HANDOFF_MS);
+    });
+    child.once('error', (err: Error) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      const message =
+        code === 'ENOENT'
+          ? 'xdg-open was not found. Install xdg-utils or a file manager and try again.'
+          : err.message;
+      logger.warn('workspace.open.spawn_failed', { message });
+      finish(message);
+    });
+    child.once('exit', (code) => {
+      if (code === 0) {
+        finish('');
+        return;
+      }
+      const message = xdgOpenFailure(code);
+      logger.warn('workspace.open.failed', { code, message });
+      finish(message);
+    });
+  });
 }
 
 export function checkWorkspaceConflict(
