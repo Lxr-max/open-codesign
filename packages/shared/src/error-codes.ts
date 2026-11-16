@@ -343,17 +343,18 @@ export const ERROR_CODE_DESCRIPTIONS: Record<CodesignErrorCode, ErrorCodeDescrip
     category: 'generation',
   },
   REFERENCE_URL_FETCH_FAILED: {
-    userFacing: 'Could not fetch the reference URL. Check the URL and your internet connection.',
+    userFacing:
+      'Could not fetch the reference URL. Check the address, your network, and the HTTP proxy in Settings if you use one.',
     userFacingKey: 'err.REFERENCE_URL_FETCH_FAILED',
     category: 'connection',
   },
   REFERENCE_URL_FETCH_TIMEOUT: {
-    userFacing: 'Fetching the reference URL timed out. Try again or use a different URL.',
+    userFacing: 'Fetching the reference URL timed out. Try again or use a different page.',
     userFacingKey: 'err.REFERENCE_URL_FETCH_TIMEOUT',
     category: 'connection',
   },
   REFERENCE_URL_UNSUPPORTED: {
-    userFacing: 'This type of reference URL is not supported.',
+    userFacing: 'This reference URL is invalid, blocked, or not an HTML or text page.',
     userFacingKey: 'err.REFERENCE_URL_UNSUPPORTED',
     category: 'generation',
   },

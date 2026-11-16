@@ -1,11 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { omittedMark } from './document-text';
-import { preparePromptContext } from './prompt-context';
+import { preparePromptContext, REFERENCE_URL_TIMEOUT_MS } from './prompt-context';
 
 const VALID_DESIGN_MD = `---
 version: alpha
@@ -279,6 +281,31 @@ describe('preparePromptContext', () => {
     });
   });
 
+  it('still blocks schemeless local and credentialed references before fetch', async () => {
+    const fetchReference = vi.fn();
+
+    await expect(
+      preparePromptContext({
+        referenceUrl: 'localhost/admin',
+        fetchReference,
+      }),
+    ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+    await expect(
+      preparePromptContext({
+        referenceUrl: '//127.0.0.1/secret',
+        fetchReference,
+      }),
+    ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+    await expect(
+      preparePromptContext({
+        referenceUrl: 'user:pass@example.com/docs',
+        fetchReference,
+      }),
+    ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+
+    expect(fetchReference).not.toHaveBeenCalled();
+  });
+
   it('rejects non-http reference URLs before fetch', async () => {
     const fetchReference = vi.fn();
 
@@ -477,11 +504,257 @@ describe('preparePromptContext', () => {
     const assertion = expect(pending).rejects.toMatchObject({
       name: 'CodesignError',
       code: 'REFERENCE_URL_FETCH_TIMEOUT',
+      message: expect.stringContaining(`${REFERENCE_URL_TIMEOUT_MS / 1000} seconds`),
     });
-    await vi.advanceTimersByTimeAsync(4_001);
+    await vi.advanceTimersByTimeAsync(REFERENCE_URL_TIMEOUT_MS + 1);
 
     await assertion;
     expect(fetchReference).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a schemeless reference URL before fetching it', async () => {
+    const fetchReference = makeReferenceFetcher(
+      new Response('<!doctype html><title>Brand</title><p>Calm voice</p>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+    );
+
+    const result = await preparePromptContext({
+      referenceUrl: ' <example.com/brand> ',
+      resolveReferenceHost: resolvePublicReferenceHost,
+      fetchReference,
+    });
+
+    expect(fetchReference.mock.calls[0]?.[0]).toBe('https://example.com/brand');
+    expect(result.referenceUrl).toMatchObject({
+      url: 'https://example.com/brand',
+      title: 'Brand',
+      excerpt: 'Brand Calm voice',
+    });
+  });
+
+  it('reads plain-text and unlabeled HTML reference pages', async () => {
+    const plain = makeReferenceFetcher(
+      new Response('Brand voice is calm and specific.', {
+        status: 200,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      }),
+    );
+    const plainResult = await preparePromptContext({
+      referenceUrl: 'https://example.com/voice.txt',
+      resolveReferenceHost: resolvePublicReferenceHost,
+      fetchReference: plain,
+    });
+    expect(plainResult.referenceUrl?.excerpt).toBe('Brand voice is calm and specific.');
+
+    const unlabeled = makeReferenceFetcher(
+      new Response('<!doctype html><title>Notes</title><p>Use the grid.</p>', {
+        status: 200,
+      }),
+    );
+    const unlabeledResult = await preparePromptContext({
+      referenceUrl: 'https://example.com/notes',
+      resolveReferenceHost: resolvePublicReferenceHost,
+      fetchReference: unlabeled,
+    });
+    expect(unlabeledResult.referenceUrl).toMatchObject({
+      title: 'Notes',
+      excerpt: 'Notes Use the grid.',
+    });
+  });
+
+  it('rejects binary reference content with the returned media type', async () => {
+    const fetchReference = makeReferenceFetcher(
+      new Response('%PDF-1.7', {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+      }),
+    );
+
+    await expect(
+      preparePromptContext({
+        referenceUrl: 'https://example.com/spec.pdf',
+        resolveReferenceHost: resolvePublicReferenceHost,
+        fetchReference,
+      }),
+    ).rejects.toMatchObject({
+      name: 'CodesignError',
+      code: 'REFERENCE_URL_UNSUPPORTED',
+      message: expect.stringContaining('application/pdf'),
+    });
+  });
+
+  it('reports a refused reference connection without the raw socket error', async () => {
+    const fetchReference = vi.fn(async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED 93.184.216.34:443'), {
+        code: 'ECONNREFUSED',
+      });
+    });
+
+    const error = await preparePromptContext({
+      referenceUrl: 'https://example.com/reference',
+      resolveReferenceHost: resolvePublicReferenceHost,
+      fetchReference,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'REFERENCE_URL_FETCH_FAILED',
+      message: expect.stringContaining('connection was refused'),
+    });
+    expect((error as { message?: string }).message).not.toContain('93.184.216.34');
+  });
+
+  it('treats an aborted reference fetch as a timeout even when the error name differs', async () => {
+    const fetchReference = vi.fn(async (_safeUrl: string, signal: AbortSignal) => {
+      if (signal.aborted) {
+        throw Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' }));
+        });
+      });
+    });
+
+    vi.useFakeTimers();
+    const pending = preparePromptContext({
+      referenceUrl: 'https://example.com/reference',
+      resolveReferenceHost: resolvePublicReferenceHost,
+      fetchReference,
+    });
+    for (let attempt = 0; attempt < 10 && fetchReference.mock.calls.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(fetchReference).toHaveBeenCalled();
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: 'REFERENCE_URL_FETCH_TIMEOUT',
+    });
+    await vi.advanceTimersByTimeAsync(REFERENCE_URL_TIMEOUT_MS + 1);
+    await assertion;
+  });
+
+  it('reports an unusable HTTP proxy instead of an opaque fetch failure', async () => {
+    const previousHttp = process.env['HTTP_PROXY'];
+    const previousHttpLower = process.env['http_proxy'];
+    process.env['HTTP_PROXY'] = 'not a proxy';
+    process.env['http_proxy'] = 'not a proxy';
+    try {
+      await expect(
+        preparePromptContext({
+          referenceUrl: 'http://example.com/reference',
+          resolveReferenceHost: resolvePublicReferenceHost,
+        }),
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_URL_FETCH_FAILED',
+        message: expect.stringContaining('not a valid proxy address'),
+      });
+    } finally {
+      if (previousHttp === undefined) delete process.env['HTTP_PROXY'];
+      else process.env['HTTP_PROXY'] = previousHttp;
+      if (previousHttpLower === undefined) delete process.env['http_proxy'];
+      else process.env['http_proxy'] = previousHttpLower;
+    }
+  });
+
+  it('fetches a public reference through the configured HTTP proxy and still blocks private targets', async () => {
+    const seen: string[] = [];
+    const proxy = http.createServer((req, res) => {
+      seen.push(req.url ?? '');
+      if (req.url?.includes('/start')) {
+        res.writeHead(302, { location: 'http://127.0.0.1/secret' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>Via proxy</title><p>Proxied body</p>');
+    });
+    proxy.on('connect', (req, socket) => {
+      seen.push(`CONNECT ${req.url ?? ''}`);
+      socket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
+      socket.end();
+    });
+    await new Promise<void>((resolve) => {
+      proxy.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = proxy.address() as AddressInfo;
+    const previous = {
+      HTTP_PROXY: process.env['HTTP_PROXY'],
+      http_proxy: process.env['http_proxy'],
+      HTTPS_PROXY: process.env['HTTPS_PROXY'],
+      https_proxy: process.env['https_proxy'],
+      ALL_PROXY: process.env['ALL_PROXY'],
+      all_proxy: process.env['all_proxy'],
+      NO_PROXY: process.env['NO_PROXY'],
+      no_proxy: process.env['no_proxy'],
+    };
+    const proxyUrl = `http://127.0.0.1:${address.port}`;
+    process.env['HTTP_PROXY'] = proxyUrl;
+    process.env['http_proxy'] = proxyUrl;
+    process.env['HTTPS_PROXY'] = proxyUrl;
+    process.env['https_proxy'] = proxyUrl;
+    delete process.env['ALL_PROXY'];
+    delete process.env['all_proxy'];
+    delete process.env['NO_PROXY'];
+    delete process.env['no_proxy'];
+    try {
+      const proxied = await preparePromptContext({
+        referenceUrl: 'http://example.com/reference',
+        resolveReferenceHost: resolvePublicReferenceHost,
+      });
+      expect(proxied.referenceUrl).toMatchObject({
+        title: 'Via proxy',
+        excerpt: expect.stringContaining('Proxied body'),
+      });
+      expect(seen).toContain('http://example.com/reference');
+
+      seen.length = 0;
+      await expect(
+        preparePromptContext({
+          referenceUrl: 'http://127.0.0.1/secret',
+          resolveReferenceHost: resolvePublicReferenceHost,
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+      expect(seen).toEqual([]);
+
+      seen.length = 0;
+      await expect(
+        preparePromptContext({
+          referenceUrl: 'https://example.com/reference',
+          resolveReferenceHost: async () => ['10.0.0.8'],
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+      expect(seen).toEqual([]);
+
+      seen.length = 0;
+      await expect(
+        preparePromptContext({
+          referenceUrl: 'http://example.com/start',
+          resolveReferenceHost: resolvePublicReferenceHost,
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_URL_UNSUPPORTED' });
+      expect(seen).toEqual(['http://example.com/start']);
+
+      seen.length = 0;
+      await expect(
+        preparePromptContext({
+          referenceUrl: 'https://example.com/reference',
+          resolveReferenceHost: resolvePublicReferenceHost,
+        }),
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_URL_FETCH_FAILED',
+        message: expect.stringContaining('Could not fetch'),
+      });
+      expect(seen.some((entry) => entry.startsWith('CONNECT example.com:443'))).toBe(true);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await new Promise<void>((resolve, reject) => {
+        proxy.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it('rejects reference URL redirects to private addresses before following them', async () => {

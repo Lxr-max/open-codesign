@@ -2821,6 +2821,24 @@ describe('applyGenerateError via sendPrompt', () => {
     expect(records[0]?.scope).toBe('generate');
   });
 
+  it('shows a reference URL fetch failure instead of a generic generation error', async () => {
+    const err = Object.assign(
+      new Error(
+        "Error invoking remote method 'codesign:v1:generate': CodesignError: Could not fetch https://example.com/docs (the connection was refused). Check the address, your network, and the HTTP proxy in Settings if you use one.",
+      ),
+      { code: 'REFERENCE_URL_FETCH_FAILED' },
+    );
+
+    await runFailingGenerate(err);
+
+    const state = useCodesignStore.getState();
+    expect(state.reportableErrors[0]?.code).toBe('REFERENCE_URL_FETCH_FAILED');
+    expect(state.lastError).toContain('connection was refused');
+    expect(state.lastError).not.toContain('Error invoking remote method');
+    expect(state.toasts[0]?.description).toContain('HTTP proxy');
+    expect(state.toasts[0]?.action?.label).toBe('Check network / VPN');
+  });
+
   it('falls back to GENERATION_FAILED when no code is present', async () => {
     await runFailingGenerate(new Error('opaque network blip'));
     const records = useCodesignStore.getState().reportableErrors;

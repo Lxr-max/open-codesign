@@ -10,6 +10,7 @@ import {
   ERROR_CODES,
   formatDesignMdForPrompt,
   type LocalInputFile,
+  normalizeReferenceUrlInput,
   type StoredDesignSystem,
   validateDesignMd,
 } from '@open-codesign/shared';
@@ -114,7 +115,25 @@ const MAX_URL_RESPONSE_BYTES = 256_000;
 const MAX_REFERENCE_URL_REDIRECTS = 3;
 const MAX_PROJECT_CONTEXT_CHARS = 10_000;
 const MAX_PROJECT_SETTINGS_CHARS = 4_000;
-const REFERENCE_CONTENT_TYPES = ['text/html', 'application/xhtml+xml'];
+/** Whole-inspection budget, including DNS, redirects, and a slow first byte. */
+export const REFERENCE_URL_TIMEOUT_MS = 15_000;
+const HTML_MEDIA_TYPES = new Set(['text/html', 'application/xhtml+xml', 'application/html']);
+const TEXT_MEDIA_TYPES = new Set([
+  'application/json',
+  'application/xml',
+  'text/css',
+  'text/csv',
+  'text/markdown',
+  'text/plain',
+  'text/xml',
+  'text/x-markdown',
+]);
+const REFERENCE_REQUEST_HEADERS = {
+  accept:
+    'text/html,application/xhtml+xml,text/plain,text/markdown,application/json;q=0.8,*/*;q=0.1',
+  'accept-encoding': 'identity',
+  'user-agent': 'OpenCoDesign (local desktop app; reference context)',
+};
 const ALLOWED_PROJECT_SETTING_KEYS = new Set([
   'schemaVersion',
   'artifactType',
@@ -166,7 +185,7 @@ function parseReferenceHttpUrl(rawUrl: string): URL {
   }
   if (isPrivateReferenceHostname(parsed.hostname)) {
     throw new CodesignError(
-      `Reference URL host "${parsed.hostname}" is not allowed`,
+      `Reference URL host "${parsed.hostname}" is not allowed. Private and local addresses are blocked.`,
       ERROR_CODES.REFERENCE_URL_UNSUPPORTED,
     );
   }
@@ -215,7 +234,7 @@ async function resolvePublicReferenceAddresses(
 ): Promise<string[]> {
   if (signal.aborted) {
     throw new CodesignError(
-      `Reference URL request timed out while resolving ${hostname}`,
+      `Fetching the reference URL timed out after ${REFERENCE_URL_TIMEOUT_MS / 1000} seconds while resolving ${hostname}. Try again or use a different page.`,
       ERROR_CODES.REFERENCE_URL_FETCH_TIMEOUT,
     );
   }
@@ -223,7 +242,7 @@ async function resolvePublicReferenceAddresses(
     const onAbort = () => {
       reject(
         new CodesignError(
-          `Reference URL request timed out while resolving ${hostname}`,
+          `Fetching the reference URL timed out after ${REFERENCE_URL_TIMEOUT_MS / 1000} seconds while resolving ${hostname}. Try again or use a different page.`,
           ERROR_CODES.REFERENCE_URL_FETCH_TIMEOUT,
         ),
       );
@@ -812,12 +831,242 @@ async function readResponseText(response: Response, url: string): Promise<string
   }
 }
 
+function referenceMediaType(contentType: string): string {
+  return contentType.split(',')[0]?.split(';')[0]?.trim().toLowerCase() ?? '';
+}
+
+function isBlockedReferenceMediaType(mediaType: string): boolean {
+  return (
+    mediaType.startsWith('image/') ||
+    mediaType.startsWith('video/') ||
+    mediaType.startsWith('audio/') ||
+    mediaType.startsWith('font/') ||
+    mediaType === 'application/pdf' ||
+    mediaType === 'application/zip' ||
+    mediaType === 'application/gzip' ||
+    mediaType === 'application/x-gzip' ||
+    mediaType === 'application/wasm'
+  );
+}
+
+function looksLikeHtmlDocument(body: string): boolean {
+  const head = body
+    .replace(/^\uFEFF/u, '')
+    .slice(0, 2_048)
+    .trimStart()
+    .toLowerCase();
+  return (
+    head.startsWith('<!doctype html') ||
+    head.startsWith('<html') ||
+    head.startsWith('<head') ||
+    head.startsWith('<body')
+  );
+}
+
+function looksLikeReadableText(body: string): boolean {
+  const sample = body.slice(0, 8_192);
+  if (sample.length === 0 || sample.includes('\0')) return false;
+  let controls = 0;
+  for (let index = 0; index < sample.length; index += 1) {
+    const code = sample.charCodeAt(index);
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) controls += 1;
+  }
+  return controls / sample.length < 0.02;
+}
+
+function referenceDocumentKind(contentType: string, body: string): 'html' | 'text' {
+  const mediaType = referenceMediaType(contentType);
+  if (isBlockedReferenceMediaType(mediaType)) {
+    throw unsupportedReferenceContent(mediaType);
+  }
+  if (HTML_MEDIA_TYPES.has(mediaType) || looksLikeHtmlDocument(body)) return 'html';
+  if (mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)) return 'text';
+  if (
+    (mediaType.length === 0 ||
+      mediaType === 'application/octet-stream' ||
+      mediaType === 'binary/octet-stream') &&
+    looksLikeReadableText(body)
+  ) {
+    return 'text';
+  }
+  throw unsupportedReferenceContent(mediaType);
+}
+
+function unsupportedReferenceContent(mediaType: string): CodesignError {
+  const label = mediaType.length > 0 ? mediaType : 'unknown';
+  return new CodesignError(
+    `Reference URL content type "${label}" is not supported. Use an HTML or text page.`,
+    ERROR_CODES.REFERENCE_URL_UNSUPPORTED,
+  );
+}
+
+function publicReferenceLabel(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    url.username = '';
+    url.password = '';
+    const label = url.toString();
+    return label.length > 180 ? `${label.slice(0, 177)}...` : label;
+  } catch {
+    return 'the reference URL';
+  }
+}
+
+function networkErrorCode(error: unknown, depth = 0): string | undefined {
+  if (depth > 3 || typeof error !== 'object' || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string' && code.length > 0) return code;
+  return networkErrorCode((error as { cause?: unknown }).cause, depth + 1);
+}
+
+function referenceFetchFailureDetail(error: unknown): string {
+  const code = networkErrorCode(error);
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'the host could not be resolved';
+  if (code === 'ECONNREFUSED') return 'the connection was refused';
+  if (code === 'ECONNRESET' || code === 'EPIPE') return 'the connection was reset';
+  if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || code === 'EAI_NONAME') {
+    return 'the network is unreachable';
+  }
+  if (
+    code === 'ETIMEDOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT' ||
+    code === 'UND_ERR_HEADERS_TIMEOUT'
+  ) {
+    return 'the connection timed out';
+  }
+  if (
+    code === 'CERT_HAS_EXPIRED' ||
+    code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' ||
+    code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+    code === 'SELF_SIGNED_CERT_IN_CHAIN' ||
+    code === 'ERR_TLS_CERT_ALTNAME_INVALID'
+  ) {
+    return 'the TLS certificate could not be verified';
+  }
+  return 'the network request failed';
+}
+
+function isNoProxyHost(rawHostname: string): boolean {
+  const raw = process.env['NO_PROXY'] ?? process.env['no_proxy'];
+  if (!raw) return false;
+  const host = rawHostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/g, '');
+  for (const entry of raw.split(',')) {
+    const token = entry.trim().toLowerCase();
+    if (token.length === 0) continue;
+    if (token === '*') return true;
+    const bare = token.replace(/^\*\./, '').replace(/^\./, '');
+    if (bare.length === 0) continue;
+    if (host === bare || host.endsWith(`.${bare}`)) return true;
+  }
+  return false;
+}
+
+function configuredReferenceProxy(target: URL): URL | null {
+  if (isNoProxyHost(target.hostname)) return null;
+  const specific =
+    target.protocol === 'https:'
+      ? (process.env['HTTPS_PROXY'] ?? process.env['https_proxy'])
+      : (process.env['HTTP_PROXY'] ?? process.env['http_proxy']);
+  const raw = (specific ?? process.env['ALL_PROXY'] ?? process.env['all_proxy'] ?? '').trim();
+  if (raw.length === 0) return null;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+  let proxy: URL;
+  try {
+    proxy = new URL(withScheme);
+  } catch (error) {
+    throw new CodesignError(
+      'The HTTP proxy in Settings is not a valid proxy address. Use a link such as http://127.0.0.1:7890.',
+      ERROR_CODES.REFERENCE_URL_FETCH_FAILED,
+      { cause: error },
+    );
+  }
+  if ((proxy.protocol !== 'http:' && proxy.protocol !== 'https:') || proxy.hostname.length === 0) {
+    throw new CodesignError(
+      'The HTTP proxy in Settings must be an http or https proxy, for example http://127.0.0.1:7890.',
+      ERROR_CODES.REFERENCE_URL_FETCH_FAILED,
+    );
+  }
+  return proxy;
+}
+
+async function fetchReferenceThroughProxy(
+  safeUrl: string,
+  proxy: URL,
+  signal: AbortSignal,
+): Promise<Response> {
+  // The proxy dials the destination, so the pinned lookup used on the direct
+  // path cannot be applied here. Private hosts are still rejected before this
+  // call, including hosts that resolve only to private addresses.
+  const { ProxyAgent, fetch: undiciFetch } = await import('undici');
+  const agent = new ProxyAgent(proxy.toString());
+  try {
+    const upstream = await undiciFetch(safeUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal,
+      headers: REFERENCE_REQUEST_HEADERS,
+      dispatcher: agent,
+    });
+    const buffered = await bufferReferenceBody(upstream, safeUrl);
+    const headers = new Headers();
+    upstream.headers.forEach((value, key) => {
+      headers.append(key, value);
+    });
+    return new Response(buffered, { status: upstream.status, headers });
+  } finally {
+    await agent.close().catch(() => undefined);
+  }
+}
+
+async function bufferReferenceBody(
+  upstream: { status: number; body: ReadableStream<Uint8Array> | null },
+  url: string,
+): Promise<Uint8Array | null> {
+  if (upstream.status >= 300 && upstream.status < 400) {
+    await upstream.body?.cancel();
+    return null;
+  }
+  if (!upstream.body) return new Uint8Array();
+  const reader = upstream.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_URL_RESPONSE_BYTES) {
+        throw new CodesignError(
+          `Reference URL response is too large for ${publicReferenceLabel(url)}`,
+          ERROR_CODES.REFERENCE_URL_TOO_LARGE,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 async function defaultFetchReference(
   safeUrl: string,
   signal: AbortSignal,
   resolveReferenceHost: ReferenceHostResolver,
 ): Promise<Response> {
   const parsedUrl = new URL(safeUrl);
+  const proxy = configuredReferenceProxy(parsedUrl);
+  if (proxy) return fetchReferenceThroughProxy(safeUrl, proxy, signal);
   const client = parsedUrl.protocol === 'https:' ? https : http;
   const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, '').replace(/\.+$/g, '');
   const lookup: http.RequestOptions['lookup'] | undefined = net.isIP(hostname)
@@ -860,7 +1109,7 @@ async function defaultFetchReference(
       parsedUrl,
       {
         method: 'GET',
-        headers: { 'user-agent': 'open-codesign/0.0.0 (+local desktop app)' },
+        headers: REFERENCE_REQUEST_HEADERS,
         lookup,
         signal,
       },
@@ -952,8 +1201,9 @@ async function inspectReferenceUrl(
   fetchReference: ReferenceFetcher,
 ): Promise<ReferenceUrlContext> {
   const initialSafeUrl = parseReferenceHttpUrl(url).toString();
+  const label = publicReferenceLabel(initialSafeUrl);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4_000);
+  const timer = setTimeout(() => controller.abort(), REFERENCE_URL_TIMEOUT_MS);
   try {
     const { response, url: fetchedUrl } = await fetchReferenceUrl(
       initialSafeUrl,
@@ -961,42 +1211,50 @@ async function inspectReferenceUrl(
       resolveReferenceHost,
       fetchReference,
     );
+    const fetchedLabel = publicReferenceLabel(fetchedUrl);
     if (!response.ok) {
       throw new CodesignError(
-        `Reference URL fetch failed (${response.status}) for ${fetchedUrl}`,
+        `The reference page at ${fetchedLabel} returned HTTP ${response.status}. Check that the page is public and reachable.`,
         ERROR_CODES.REFERENCE_URL_FETCH_FAILED,
       );
     }
 
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-    if (!REFERENCE_CONTENT_TYPES.some((type) => contentType.includes(type))) {
+    const rawBody = (await readResponseText(response, fetchedUrl)).replace(/^\uFEFF/u, '');
+    const contentType = response.headers.get('content-type') ?? '';
+    const kind = referenceDocumentKind(contentType, rawBody);
+    const title = kind === 'html' ? extractHtmlElementInner(rawBody, 'title')?.trim() : undefined;
+    const description = kind === 'html' ? metaDescription(rawBody) : undefined;
+    const excerpt = cleanText(
+      kind === 'html' ? stripHtml(rawBody) : rawBody,
+      MAX_URL_EXCERPT_CHARS,
+    );
+    if (excerpt.length === 0 && !title && !description) {
       throw new CodesignError(
-        `Unsupported reference URL content type "${contentType || 'unknown'}" for ${fetchedUrl}`,
+        `The reference page at ${fetchedLabel} returned no readable text. JavaScript-only pages are not supported.`,
         ERROR_CODES.REFERENCE_URL_UNSUPPORTED,
       );
     }
-
-    const html = await readResponseText(response, fetchedUrl);
-    const title = extractHtmlElementInner(html, 'title')?.trim();
-    const description = metaDescription(html);
 
     return {
       url: fetchedUrl,
       ...(title ? { title } : {}),
       ...(description ? { description } : {}),
-      excerpt: cleanText(stripHtml(html), MAX_URL_EXCERPT_CHARS),
+      excerpt,
     };
   } catch (error) {
     if (error instanceof CodesignError) throw error;
-    const code =
-      error instanceof Error && error.name === 'AbortError'
-        ? 'REFERENCE_URL_FETCH_TIMEOUT'
-        : 'REFERENCE_URL_FETCH_FAILED';
-    const message =
-      code === 'REFERENCE_URL_FETCH_TIMEOUT'
-        ? `Reference URL request timed out for ${initialSafeUrl}`
-        : `Failed to fetch reference URL ${initialSafeUrl}`;
-    throw new CodesignError(message, code, { cause: error });
+    if (controller.signal.aborted) {
+      throw new CodesignError(
+        `Fetching the reference URL timed out after ${REFERENCE_URL_TIMEOUT_MS / 1000} seconds. Try again or use a different page.`,
+        ERROR_CODES.REFERENCE_URL_FETCH_TIMEOUT,
+        { cause: error },
+      );
+    }
+    throw new CodesignError(
+      `Could not fetch ${label} (${referenceFetchFailureDetail(error)}). Check the address, your network, and the HTTP proxy in Settings if you use one.`,
+      ERROR_CODES.REFERENCE_URL_FETCH_FAILED,
+      { cause: error },
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -1020,10 +1278,12 @@ export async function preparePromptContext(input: {
   const attachments = await Promise.all(
     (input.attachments ?? []).map((file) => readAttachment(file, input.workspaceRoot)),
   );
+  const normalizedReferenceUrl =
+    typeof input.referenceUrl === 'string' ? normalizeReferenceUrlInput(input.referenceUrl) : '';
   const referenceUrl =
-    typeof input.referenceUrl === 'string' && input.referenceUrl.trim().length > 0
+    normalizedReferenceUrl.length > 0
       ? await inspectReferenceUrl(
-          input.referenceUrl.trim(),
+          normalizedReferenceUrl,
           input.resolveReferenceHost ?? defaultResolveReferenceHost,
           input.fetchReference ?? defaultFetchReference,
         )

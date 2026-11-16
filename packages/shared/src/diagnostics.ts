@@ -403,10 +403,6 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
         cause: 'diagnostics.cause.referenceUrlInvalid',
         category: 'reference-url-invalid',
         severity: 'warning',
-        suggestedFix: {
-          kind: 'openSettings',
-          label: 'diagnostics.fix.checkReferenceUrl',
-        },
       }),
     ];
   }
@@ -418,7 +414,8 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
         severity: 'warning',
         suggestedFix: {
           kind: 'openSettings',
-          label: 'diagnostics.fix.checkReferenceUrl',
+          label: 'diagnostics.fix.checkNetwork',
+          settingsTab: 'advanced',
         },
       }),
     ];
@@ -431,7 +428,8 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
         severity: 'warning',
         suggestedFix: {
           kind: 'openSettings',
-          label: 'diagnostics.fix.checkReferenceUrl',
+          label: 'diagnostics.fix.checkNetwork',
+          settingsTab: 'advanced',
         },
       }),
     ];
@@ -442,10 +440,6 @@ export function diagnoseGenerateFailure(ctx: GenerateFailureContext): Diagnostic
         cause: 'diagnostics.cause.referenceUrlTooLarge',
         category: 'reference-url-too-large',
         severity: 'warning',
-        suggestedFix: {
-          kind: 'openSettings',
-          label: 'diagnostics.fix.checkReferenceUrl',
-        },
       }),
     ];
   }

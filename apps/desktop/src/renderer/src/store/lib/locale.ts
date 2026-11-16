@@ -1,5 +1,9 @@
 import { i18n } from '@open-codesign/i18n';
-import type { LocalInputFile, ModelRef } from '@open-codesign/shared';
+import {
+  type LocalInputFile,
+  type ModelRef,
+  normalizeReferenceUrlInput,
+} from '@open-codesign/shared';
 
 export function tr(key: string, options?: Record<string, unknown>): string {
   return i18n.t(key, options ?? {}) as string;
@@ -14,8 +18,9 @@ export function modelRef(provider: string, modelId: string): ModelRef {
 }
 
 export function normalizeReferenceUrl(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+  if (value === undefined) return undefined;
+  const normalized = normalizeReferenceUrlInput(value);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 export function uniqueFiles(files: LocalInputFile[]): LocalInputFile[] {

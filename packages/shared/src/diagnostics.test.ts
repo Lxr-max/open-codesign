@@ -314,7 +314,21 @@ describe('diagnoseGenerateFailure', () => {
     });
     expect(result[0]?.category).toBe('reference-url-fetch-timeout');
     expect(result[0]?.cause).toBe('diagnostics.cause.referenceUrlTimeout');
-    expect(result[0]?.suggestedFix?.kind).toBe('openSettings');
+    expect(result[0]?.suggestedFix).toMatchObject({
+      kind: 'openSettings',
+      label: 'diagnostics.fix.checkNetwork',
+      settingsTab: 'advanced',
+    });
+  });
+
+  it('does not send content-type reference URL failures to Settings', () => {
+    const result = diagnoseGenerateFailure({
+      ...ctx,
+      code: 'REFERENCE_URL_UNSUPPORTED',
+      message: 'Reference URL content type "application/pdf" is not supported.',
+    });
+    expect(result[0]?.category).toBe('reference-url-invalid');
+    expect(result[0]?.suggestedFix).toBeUndefined();
   });
 
   it('maps 500 with "not implemented" body to gatewayIncompatible', () => {

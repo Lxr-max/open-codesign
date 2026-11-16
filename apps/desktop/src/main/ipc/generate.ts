@@ -30,6 +30,7 @@ import {
   deriveResourceStateFromChatRows,
   GeneratePayloadV1,
   ListActiveMessagesInputV1,
+  parseIpcWithReferenceUrl,
   summarizeUsageBudget,
   type UsageTotals,
 } from '@open-codesign/shared';
@@ -1181,7 +1182,7 @@ export function registerGenerateIpc({ db, getMainWindow }: RegisterGenerateIpcDe
   });
 
   ipcMain.handle('codesign:v1:generate', async (_e, raw: unknown) => {
-    const payload = GeneratePayloadV1.parse(raw);
+    const payload = parseIpcWithReferenceUrl(GeneratePayloadV1, raw);
     const id = payload.generationId;
     return withRun(id, async () => {
       const controller = new AbortController();
@@ -1703,7 +1704,7 @@ export function registerGenerateIpc({ db, getMainWindow }: RegisterGenerateIpcDe
   }));
 
   ipcMain.handle('codesign:apply-comment', async (_e, raw: unknown) => {
-    const payload = ApplyCommentPayload.parse(raw);
+    const payload = parseIpcWithReferenceUrl(ApplyCommentPayload, raw);
     const id = payload.generationId;
     return withRun(id, async () => {
       const controller = new AbortController();

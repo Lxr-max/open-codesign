@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReferenceUrlField } from './reference-url';
 
 export {
   ActiveRunMessageInputV1,
@@ -229,7 +230,7 @@ export const GeneratePayloadV1 = z
     history: z.array(ChatMessage).max(200),
     model: ModelRef,
     baseUrl: z.string().url().optional(),
-    referenceUrl: z.string().url().optional(),
+    referenceUrl: ReferenceUrlField,
     attachments: z.array(LocalInputFile).max(12).default([]),
     generationId: GenerationId,
     /** Required in v0.2: every generation belongs to a workspace-backed design. */
@@ -250,7 +251,7 @@ export const ApplyCommentPayload = z
     selection: SelectedElement,
     generationId: GenerationId,
     model: ModelRef.optional(),
-    referenceUrl: z.string().url().optional(),
+    referenceUrl: ReferenceUrlField,
     attachments: z.array(LocalInputFile).max(12).default([]),
   })
   .strict();
@@ -441,6 +442,7 @@ export {
   ProxyPreset,
   ProxyPresetIdSchema,
 } from './proxy-presets';
+export { normalizeReferenceUrlInput, parseIpcWithReferenceUrl } from './reference-url';
 export type {
   LastDoneStateV1,
   ResourceManifestEntryV1,
