@@ -85,7 +85,7 @@ Keyless (IP-allowlisted) corporate proxies are also supported, as are ChatGPT Pl
 
 - **macOS** — Apple Silicon (M1 / M2 / M3 / M4) and Intel
 - **Windows** — x64 and ARM64
-- **Linux** — AppImage, `.deb` (Debian / Ubuntu), `.rpm` (Fedora / RHEL)
+- **Linux** — AppImage, `.deb` (Debian / Ubuntu), `.rpm` (Fedora / RHEL), and an in-repo Arch `PKGBUILD` (`packaging/aur`; not published to the AUR)
 
 Heavy features like PDF export (local Chrome) and PPTX generation are lazy-loaded on first use, so the base install stays small.
 
@@ -100,6 +100,11 @@ brew install --cask opencoworkai/tap/open-codesign
 # Windows
 scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
+
+# Arch Linux — in-repo PKGBUILD, not published to the AUR
+git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git
+cd open-codesign/packaging/aur
+makepkg -si
 ```
 
 Or download the installer directly from [GitHub Releases](https://github.com/OpenCoworkAI/open-codesign/releases). Every release ships `SHA256SUMS.txt` and a CycloneDX SBOM for verification. The winget package is submitted and waiting for Microsoft review; once it merges, `winget install OpenCoworkAI.OpenCoDesign` will become the Windows one-liner.

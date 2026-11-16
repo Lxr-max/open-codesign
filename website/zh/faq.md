@@ -85,7 +85,7 @@ Bolt.new 是基于浏览器的全栈应用构建器，跑在 StackBlitz 的 WebC
 
 - **macOS**——Apple Silicon（M1 / M2 / M3 / M4）和 Intel
 - **Windows**——x64 和 ARM64
-- **Linux**——AppImage、`.deb`（Debian / Ubuntu）、`.rpm`（Fedora / RHEL）
+- **Linux**——AppImage、`.deb`（Debian / Ubuntu）、`.rpm`（Fedora / RHEL），以及仓库内的 Arch `PKGBUILD`（`packaging/aur`，尚未发布到 AUR）
 
 PDF 导出（依赖本机 Chrome）、PPTX 生成等重型功能首次使用时按需加载，基础安装包保持精简。
 
@@ -100,6 +100,11 @@ brew install --cask opencoworkai/tap/open-codesign
 # Windows
 scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
+
+# Arch Linux — 仓库内 PKGBUILD，尚未发布到 AUR
+git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git
+cd open-codesign/packaging/aur
+makepkg -si
 ```
 
 或者直接到 [GitHub Releases](https://github.com/OpenCoworkAI/open-codesign/releases) 下载安装包。每个版本都附带 `SHA256SUMS.txt` 和 CycloneDX SBOM 供校验。winget 包已经提交，正在等 Microsoft review；合并后 `winget install OpenCoworkAI.OpenCoDesign` 才会成为可用的一行命令。

@@ -33,7 +33,7 @@
       "id": "platforms",
       "language": "en-US",
       "question": "Which platforms are supported?",
-      "answer": "Open CoDesign supports macOS Apple Silicon, macOS Intel, Windows x64, Windows ARM64, and Linux packages including AppImage, deb, and rpm."
+      "answer": "Open CoDesign supports macOS Apple Silicon, macOS Intel, Windows x64, Windows ARM64, and Linux packages including AppImage, deb, and rpm. Arch Linux can build the in-repo PKGBUILD at packaging/aur; it is not published to the AUR."
     },
     {
       "id": "what-is-open-codesign-zh",
@@ -63,7 +63,7 @@
       "id": "platforms-zh",
       "language": "zh-CN",
       "question": "Open CoDesign 支持哪些平台？",
-      "answer": "Open CoDesign 支持 macOS Apple Silicon、macOS Intel、Windows x64、Windows ARM64，以及 Linux AppImage、deb、rpm 安装包。"
+      "answer": "Open CoDesign 支持 macOS Apple Silicon、macOS Intel、Windows x64、Windows ARM64，以及 Linux AppImage、deb、rpm 安装包。Arch Linux 可以构建仓库内 packaging/aur 的 PKGBUILD，该配方尚未发布到 AUR。"
     },
     {
       "id": "install-status",

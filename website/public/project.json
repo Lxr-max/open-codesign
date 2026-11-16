@@ -56,7 +56,8 @@
     "Windows ARM64",
     "Linux AppImage",
     "Linux deb",
-    "Linux rpm"
+    "Linux rpm",
+    "Arch Linux (in-repo PKGBUILD)"
   ],
   "outputs": [
     "HTML prototypes",

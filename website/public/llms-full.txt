@@ -113,9 +113,14 @@ scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
 
 # Windows - winget is pending Microsoft review for v0.2.0
+
+# Arch Linux — in-repo PKGBUILD, not published to the AUR
+git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git
+cd open-codesign/packaging/aur
+makepkg -si
 ```
 
-Direct downloads are published on GitHub Releases for macOS, Windows, and Linux. GitHub Releases is the primary binary distribution source. SourceForge provides a public mirror at https://sourceforge.net/projects/open-codesign.mirror/files/ for users who cannot reach GitHub reliably. Mirror downloads should be verified against `SHA256SUMS.txt` from the matching GitHub release. For v0.2.0, Homebrew Cask and Scoop are live. The winget manifest is submitted as https://github.com/microsoft/winget-pkgs/pull/372310 and is waiting for Microsoft review.
+Direct downloads are published on GitHub Releases for macOS, Windows, and Linux. GitHub Releases is the primary binary distribution source. SourceForge provides a public mirror at https://sourceforge.net/projects/open-codesign.mirror/files/ for users who cannot reach GitHub reliably. Mirror downloads should be verified against `SHA256SUMS.txt` from the matching GitHub release. For v0.2.0, Homebrew Cask and Scoop are live. The winget manifest is submitted as https://github.com/microsoft/winget-pkgs/pull/372310 and is waiting for Microsoft review. Arch Linux installs are built locally from `packaging/aur/PKGBUILD`; the project does not publish an AUR package.
 
 Build from source:
 

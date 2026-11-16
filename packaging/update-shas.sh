@@ -3,7 +3,7 @@
 #
 # Reads SHA256SUMS.txt from the release (one GET — no re-downloading
 # installers) and rewrites version strings, URLs, and checksums across
-# homebrew cask, scoop, winget, and flatpak. Scoop prefers the Windows zip
+# homebrew cask, scoop, winget, flatpak, and the Arch PKGBUILD. Scoop prefers the Windows zip
 # artifacts when present; older releases fall back to unpacking the nested
 # electron-builder NSIS payload. For winget, auto-copies the previous version
 # directory when the new one does not yet exist.
@@ -61,6 +61,7 @@ WIN_ARM64_EXE="open-codesign-${VERSION}-arm64-setup.exe"
 WIN_X64_ZIP="open-codesign-${VERSION}-x64.zip"
 WIN_ARM64_ZIP="open-codesign-${VERSION}-arm64.zip"
 LINUX_APPIMAGE="open-codesign-${VERSION}-x64.AppImage"
+LINUX_DEB="open-codesign-${VERSION}-x64.deb"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -137,11 +138,13 @@ win_arm_sha="$(lookup_sha "$WIN_ARM64_EXE")"
 win_x64_zip_sha="$(lookup_optional_sha "$WIN_X64_ZIP")"
 win_arm_zip_sha="$(lookup_optional_sha "$WIN_ARM64_ZIP")"
 linux_sha=""
+linux_deb_sha=""
 
 if [[ "$PACKAGING_CHANNEL" == "all" ]]; then
   mac_arm_sha="$(lookup_sha "$MAC_ARM64_DMG")"
   mac_x64_sha="$(lookup_sha "$MAC_X64_DMG")"
   linux_sha="$(lookup_sha "$LINUX_APPIMAGE")"
+  linux_deb_sha="$(lookup_sha "$LINUX_DEB")"
 fi
 
 if [[ -n "$win_x64_zip_sha" || -n "$win_arm_zip_sha" ]]; then
@@ -166,6 +169,7 @@ if [[ "$scoop_mode" == "zip" ]]; then
 fi
 if [[ "$PACKAGING_CHANNEL" == "all" ]]; then
   echo "  linux AppImage : $linux_sha"
+  echo "  linux deb      : $linux_deb_sha"
 fi
 echo ""
 
@@ -393,6 +397,71 @@ if [[ "$PACKAGING_CHANNEL" == "all" && -f "$flatpak" ]]; then
   if [[ -n "${size:-}" ]]; then
     perl -pi -e "s/^(\\s+size:).*/\${1} ${size}/" "$flatpak"
   fi
+fi
+
+# ---------------------------------------------------------------
+# 6. Arch PKGBUILD (in-repo only; not submitted to the AUR)
+# ---------------------------------------------------------------
+aur="packaging/aur/PKGBUILD"
+if [[ "$PACKAGING_CHANNEL" == "all" && -f "$aur" ]]; then
+  echo "Arch PKGBUILD…"
+  license_url="https://raw.githubusercontent.com/OpenCoworkAI/open-codesign/v${VERSION}/LICENSE"
+  echo "  fetching ${license_url}"
+  if ! curl -fsSL -o "$tmpdir/LICENSE" "$license_url"; then
+    echo "error: could not download LICENSE for v${VERSION}" >&2
+    exit 1
+  fi
+  license_sha="$(sha256sum "$tmpdir/LICENSE" | awk '{print $1}')"
+  python3 - "$aur" "$VERSION" "$linux_deb_sha" "$license_sha" "$PRODUCT_NAME" <<'PY'
+import re
+import sys
+
+path, version, deb_sha, license_sha, product = sys.argv[1:]
+if not re.fullmatch(r"[a-f0-9]{64}", deb_sha):
+    sys.exit(f"error: deb checksum is not sha256: {deb_sha}")
+if not re.fullmatch(r"[a-f0-9]{64}", license_sha):
+    sys.exit(f"error: LICENSE checksum is not sha256: {license_sha}")
+
+text = open(path, encoding="utf-8").read()
+old_ver = re.search(r"(?m)^pkgver=(.*)$", text)
+if old_ver is None:
+    sys.exit("error: pkgver assignment missing in Arch PKGBUILD")
+
+text, n = re.subn(r"(?m)^pkgver=.*$", f"pkgver={version}", text, count=1)
+if n != 1:
+    sys.exit("error: failed to rewrite Arch pkgver")
+if old_ver.group(1) != version:
+    text, n = re.subn(r"(?m)^pkgrel=.*$", "pkgrel=1", text, count=1)
+    if n != 1:
+        sys.exit("error: pkgrel assignment missing in Arch PKGBUILD")
+
+escaped = "'" + product.replace("'", "'\\''") + "'"
+text, n = re.subn(
+    r"(?m)^_product_install_dir=.*$",
+    f"_product_install_dir={escaped}",
+    text,
+    count=1,
+)
+if n != 1:
+    sys.exit("error: _product_install_dir assignment missing in Arch PKGBUILD")
+
+sums = (
+    "sha256sums=(\n"
+    f"  '{deb_sha}'\n"
+    f"  '{license_sha}'\n"
+    ")"
+)
+text, n = re.subn(
+    r"(?m)^sha256sums=\(\n  '[a-f0-9]{64}'\n  '[a-f0-9]{64}'\n\)",
+    sums,
+    text,
+    count=1,
+)
+if n != 1:
+    sys.exit("error: sha256sums block missing in Arch PKGBUILD")
+
+open(path, "w", encoding="utf-8").write(text)
+PY
 fi
 
 echo ""

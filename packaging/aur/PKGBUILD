@@ -1,0 +1,93 @@
+# Maintainer: Open CoDesign Maintainers <maintainers@opencowork.ai>
+# shellcheck shell=bash disable=SC2034,SC2154
+#
+# Binary package for local pacman installs. This file is the in-repo source
+# of truth; it is not published to the AUR from this repository.
+# packaging/update-shas.sh rewrites pkgver, _product_install_dir, and the
+# sha256sums block (deb asset, then the MIT LICENSE at the matching tag).
+
+pkgname=open-codesign-bin
+_pkgname=open-codesign
+pkgver=0.3.0
+pkgrel=1
+# electron-builder installs the .deb under /opt/${productName}.
+_product_install_dir='Open CoDesign'
+pkgdesc='Prompt-to-design desktop app for HTML prototypes, decks, and marketing assets'
+arch=('x86_64')
+url='https://github.com/OpenCoworkAI/open-codesign'
+license=('MIT')
+# Sonames the Electron binary needs that Arch gtk3 does not already depend
+# on, plus libnotify and libsecret, which Electron dlopens at runtime.
+depends=(
+  'alsa-lib'
+  'gtk3'
+  'libnotify'
+  'libsecret'
+  'mesa'
+  'nss'
+  'xdg-utils'
+)
+provides=("${_pkgname}")
+conflicts=("${_pkgname}")
+options=('!strip' '!debug')
+source=(
+  "${_pkgname}-${pkgver}-x64.deb::https://github.com/OpenCoworkAI/open-codesign/releases/download/v${pkgver}/${_pkgname}-${pkgver}-x64.deb"
+  "LICENSE-${pkgver}::https://raw.githubusercontent.com/OpenCoworkAI/open-codesign/v${pkgver}/LICENSE"
+)
+sha256sums=(
+  '6765fac119ef733a21dd05db93ea7364799e41b2c4b40ed55f394a4c7882c956'
+  'b237bbed868a994070382dbe91b21e37bd3df8110490d351fc98892fe3d847e2'
+)
+
+package() {
+  local deb="${_pkgname}-${pkgver}-x64.deb"
+  local staged="${pkgdir}/opt/${_product_install_dir}"
+  local dest="${pkgdir}/opt/${_pkgname}"
+  local desktop="${pkgdir}/usr/share/applications/${_pkgname}.desktop"
+  local expected="Exec=\"/opt/${_pkgname}/${_pkgname}\""
+  local -a data
+
+  bsdtar -xf "${deb}"
+  data=(data.tar.*)
+  if [[ ${#data[@]} -ne 1 || ! -f "${data[0]}" ]]; then
+    echo "expected exactly one data.tar archive in the .deb" >&2
+    return 1
+  fi
+  bsdtar -xf "${data[0]}" -C "${pkgdir}"
+
+  if [[ ! -d "${staged}" ]]; then
+    echo "expected /opt/${_product_install_dir} inside the .deb" >&2
+    return 1
+  fi
+  if [[ "${staged}" != "${dest}" ]]; then
+    mv "${staged}" "${dest}"
+  fi
+  if [[ ! -x "${dest}/${_pkgname}" ]]; then
+    echo "expected executable /opt/${_pkgname}/${_pkgname}" >&2
+    return 1
+  fi
+
+  install -d "${pkgdir}/usr/bin"
+  ln -sfn "/opt/${_pkgname}/${_pkgname}" "${pkgdir}/usr/bin/${_pkgname}"
+
+  if [[ ! -f "${desktop}" ]]; then
+    echo "expected /usr/share/applications/${_pkgname}.desktop" >&2
+    return 1
+  fi
+  sed -i "s|/opt/${_product_install_dir}|/opt/${_pkgname}|g" "${desktop}"
+  if ! grep -Fq "${expected}" "${desktop}"; then
+    echo "desktop file Exec path was not updated" >&2
+    return 1
+  fi
+
+  rm -rf "${pkgdir}/usr/share/doc"
+
+  # Electron aborts when this helper is not root-owned mode 4755 and
+  # unprivileged user namespaces are unavailable. pacman installs as root.
+  if [[ -f "${dest}/chrome-sandbox" ]]; then
+    chmod 4755 "${dest}/chrome-sandbox"
+  fi
+
+  install -Dm644 "${srcdir}/LICENSE-${pkgver}" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

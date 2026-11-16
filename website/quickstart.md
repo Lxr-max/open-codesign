@@ -18,9 +18,14 @@ brew install --cask opencoworkai/tap/open-codesign
 # Windows — Scoop
 scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
+
+# Arch Linux — in-repo PKGBUILD, not published to the AUR
+git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git
+cd open-codesign/packaging/aur
+makepkg -si
 ```
 
-Homebrew and Scoop are live for v0.2.0. The winget manifest has been submitted in microsoft/winget-pkgs#372310 and is waiting for Microsoft review; use Scoop or the direct installer until that PR merges.
+Homebrew and Scoop are live for v0.2.0. The winget manifest has been submitted in microsoft/winget-pkgs#372310 and is waiting for Microsoft review; use Scoop or the direct installer until that PR merges. Arch Linux users build `packaging/aur/PKGBUILD` locally; it is not an AUR package.
 
 ### Or direct download
 
@@ -35,6 +40,7 @@ Pick the matching installer from [GitHub Releases](https://github.com/OpenCowork
 | Linux (AppImage) | `open-codesign-*-x64.AppImage` |
 | Linux (Debian/Ubuntu) | `open-codesign-*-x64.deb` |
 | Linux (Fedora/RHEL) | `open-codesign-*-x64.rpm` |
+| Linux (Arch) | `packaging/aur/PKGBUILD` (builds from the `.deb`; not on the AUR) |
 
 GitHub Releases is the primary download source. The [SourceForge mirror](https://sourceforge.net/projects/open-codesign.mirror/files/) can help when GitHub downloads are slow or blocked, but verify the file against the `SHA256SUMS.txt` attached to the same GitHub release before installing.
 

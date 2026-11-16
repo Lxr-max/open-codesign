@@ -194,6 +194,8 @@ scoop install opencoworkai/open-codesign
 | Linux (x64, Debian/Ubuntu) | `open-codesign-*-x64.deb` |
 | Linux (x64, Fedora/RHEL) | `open-codesign-*-x64.rpm` |
 
+Arch Linux has no separate release asset. `packaging/aur` is a PKGBUILD that builds a pacman package from the official `.deb`. It is not published to the AUR.
+
 Each release ships with `SHA256SUMS.txt` and a CycloneDX SBOM (`*-sbom.cdx.json`) so you can verify what you downloaded.
 
 <details>
@@ -206,8 +208,9 @@ Each release ships with `SHA256SUMS.txt` and a CycloneDX SBOM (`*-sbom.cdx.json`
 | winget (Windows) | `winget install OpenCoworkAI.OpenCoDesign` | 🟡 PR submitted; waiting for Microsoft review |
 | Flathub (Linux) | `flatpak install flathub ai.opencowork.codesign` | ⏸ Deferred; needs signed build + AppStream metadata |
 | Snap (Linux) | `snap install --dangerous open-codesign-*.snap` | 🟡 Attached to releases best-effort; Snap Store publish not yet wired |
+| Arch Linux | `git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git && cd open-codesign/packaging/aur && makepkg -si` | 🟡 PKGBUILD in repo; not published to the AUR |
 
-After each stable tag push, CI syncs SHAs back into `packaging/` and publishes downstream Homebrew/Scoop updates when the repo secrets are configured. The first winget submission is in review; once Microsoft accepts the package, future winget bumps can be automated from the release workflow. Every `packaging/*/README.md` documents its own channel.
+After each stable tag push, CI syncs SHAs back into `packaging/`, including the Arch PKGBUILD, and publishes downstream Homebrew/Scoop updates when the repo secrets are configured. The Arch recipe is not submitted to the AUR. The first winget submission is in review; once Microsoft accepts the package, future winget bumps can be automated from the release workflow. Every `packaging/*/README.md` documents its own channel.
 </details>
 
 > **Unsigned installer note:** installers are not notarized or Authenticode-signed yet. On **macOS Sequoia 15+** right-click → Open no longer bypasses Gatekeeper, and "Open Anyway" in System Settings often fails. Reliable one-liner:

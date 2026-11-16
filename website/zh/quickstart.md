@@ -18,9 +18,14 @@ brew install --cask opencoworkai/tap/open-codesign
 # Windows — Scoop
 scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
+
+# Arch Linux — 仓库内 PKGBUILD，尚未发布到 AUR
+git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git
+cd open-codesign/packaging/aur
+makepkg -si
 ```
 
-Homebrew 和 Scoop 已经更新到 v0.2.0。winget manifest 已提交到 microsoft/winget-pkgs#372310，正在等 Microsoft review；PR 合并前建议先用 Scoop 或直接下载安装包。
+Homebrew 和 Scoop 已经更新到 v0.2.0。winget manifest 已提交到 microsoft/winget-pkgs#372310，正在等 Microsoft review；PR 合并前建议先用 Scoop 或直接下载安装包。Arch Linux 用户在本地构建 `packaging/aur/PKGBUILD`，它还不是 AUR 包。
 
 ### 或者直接下载
 
@@ -35,6 +40,7 @@ Homebrew 和 Scoop 已经更新到 v0.2.0。winget manifest 已提交到 microso
 | Linux（AppImage） | `open-codesign-*-x64.AppImage` |
 | Linux（Debian/Ubuntu） | `open-codesign-*-x64.deb` |
 | Linux（Fedora/RHEL） | `open-codesign-*-x64.rpm` |
+| Linux（Arch） | `packaging/aur/PKGBUILD`（用 `.deb` 构建，尚未发布到 AUR） |
 
 GitHub Releases 是主要下载源。如果 GitHub 下载慢或不可达，可以用 [SourceForge 镜像](https://sourceforge.net/projects/open-codesign.mirror/files/)；安装前请用同一个 GitHub release 里附带的 `SHA256SUMS.txt` 校验下载文件。
 

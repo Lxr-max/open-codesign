@@ -21,13 +21,16 @@ packaging/
 │   └── bucket/open-codesign.json
 ├── flatpak/
 │   └── ai.opencowork.codesign.yaml
+├── aur/
+│   ├── PKGBUILD
+│   └── README.md
 └── update-shas.sh
 ```
 
 ## Release flow
 
 1. Push a `vX.Y.Z` tag. `release.yml` builds + publishes the installers.
-2. After `publish` succeeds, the **`bump-manifests`** job runs `update-shas.sh`: it pulls `SHA256SUMS.txt` from the release, rewrites versions / URLs / checksums across all four channels, and opens or updates `release/vX.Y.Z-manifests` as a PR to `main`. Auto-merge waits for required checks. It never pushes directly to `main` or adds `[skip ci]`.
+2. After `publish` succeeds, the **`bump-manifests`** job runs `update-shas.sh`: it pulls `SHA256SUMS.txt` from the release, rewrites versions / URLs / checksums across Homebrew, winget, Scoop, Flatpak, and the Arch PKGBUILD, and opens or updates `release/vX.Y.Z-manifests` as a PR to `main`. Auto-merge waits for required checks. It never pushes directly to `main` or adds `[skip ci]`. The Arch recipe stays in this repo; the job does not submit it to the AUR.
 3. The **`scoop`** job copies the generated Scoop manifest into `OpenCoworkAI/scoop-bucket` when `SCOOP_BUCKET_TOKEN` is configured.
 4. The **`homebrew`** job copies the generated cask into `OpenCoworkAI/homebrew-tap` when `HOMEBREW_TAP_TOKEN` is configured.
 5. The **`winget`** job submits future bumps after Microsoft accepts the initial package. The v0.2.0 winget PR is microsoft/winget-pkgs#372310.
@@ -143,10 +146,23 @@ scoop bucket add opencoworkai https://github.com/OpenCoworkAI/scoop-bucket
 scoop install opencoworkai/open-codesign
 ```
 
+### Arch Linux — in-repo PKGBUILD
+
+Arch users build a pacman package from the official `.deb` with `packaging/aur/PKGBUILD`. This repository does not publish that package to the AUR. `update-shas.sh` rewrites `pkgver`, the upstream `/opt` directory name, and the `.deb` / `LICENSE` checksums after each release. Publishing to the AUR later is a separate step for someone with an AUR account: `makepkg --printsrcinfo > .SRCINFO`, then push from that account.
+
+The pacman package name is `open-codesign-bin`. It provides `open-codesign` and installs the `open-codesign` command. The `.deb` has no `/usr/bin` launcher and unpacks into `/opt/Open CoDesign`; the PKGBUILD moves that tree to `/opt/open-codesign`, adds the launcher, and installs `chrome-sandbox` mode `4755`.
+
+```sh
+sudo pacman -S --needed base-devel
+cd packaging/aur
+makepkg -si
+```
+
 ## Signing status
 
 - macOS: **unsigned / not notarized**. On first launch Gatekeeper shows "damaged, move to Trash". Users run `xattr -cr "/Applications/Open CoDesign.app"` after installing. Older 0.1.2 and earlier builds used `/Applications/open-codesign.app`. Caveat text in the cask surfaces this.
 - Windows: **unsigned**. SmartScreen will warn; users click "More info" → "Run anyway". No workaround needed beyond that.
 - Linux AppImage: runs as-is.
+- Arch: `makepkg` checks the published `.deb` SHA256 and builds a local package. There is no separate package signature.
 
 Code signing + notarization is tracked for Stage 2 (Apple Developer ID + Windows EV cert). Once wired up, drop the Gatekeeper caveat from the cask and the SmartScreen note from the Windows READMEs.

@@ -156,6 +156,8 @@ scoop install opencoworkai/open-codesign
 | Linux（x64，Debian/Ubuntu） | `open-codesign-*-x64.deb` |
 | Linux（x64，Fedora/RHEL） | `open-codesign-*-x64.rpm` |
 
+Arch Linux 没有单独的 release 安装包。`packaging/aur` 里的 PKGBUILD 会用官方 `.deb` 构建 pacman 包，目前没有发布到 AUR。
+
 每个 release 都会附带 `SHA256SUMS.txt` 和 CycloneDX SBOM（`*-sbom.cdx.json`），方便你校验下载内容。
 
 <details>
@@ -168,8 +170,9 @@ scoop install opencoworkai/open-codesign
 | winget（Windows） | `winget install OpenCoworkAI.OpenCoDesign` | 🟡 PR 已提交，等待 Microsoft review |
 | Flathub（Linux） | `flatpak install flathub ai.opencowork.codesign` | ⏸ 延后处理，需要签名构建 + AppStream 元数据 |
 | Snap（Linux） | `snap install --dangerous open-codesign-*.snap` | 🟡 随 release 尽量附带，尚未接入 Snap Store |
+| Arch Linux | `git clone --depth 1 https://github.com/OpenCoworkAI/open-codesign.git && cd open-codesign/packaging/aur && makepkg -si` | 🟡 仓库内提供 PKGBUILD，尚未发布到 AUR |
 
-每次 stable tag push 后，CI 会把 SHA 自动写回 `packaging/`，并在仓库 secret 配好时同步 Homebrew / Scoop 下游仓库。winget 的首次提交还在 Microsoft review；等包名被接受后，后续版本可以由 release workflow 自动提 bump。下游镜像流程见各个 `packaging/*/README.md`。
+每次 stable tag push 后，CI 会把 SHA 自动写回 `packaging/`（包含 Arch PKGBUILD），并在仓库 secret 配好时同步 Homebrew / Scoop 下游仓库。Arch 配方不会被提交到 AUR。winget 的首次提交还在 Microsoft review；等包名被接受后，后续版本可以由 release workflow 自动提 bump。下游镜像流程见各个 `packaging/*/README.md`。
 </details>
 
 > **未签名安装包提示：** 当前安装包还没有 Apple notarization 和 Windows Authenticode 签名。**macOS Sequoia 15+** 起，右键 → 打开 已不能绕过 Gatekeeper，即使在「系统设置 → 隐私与安全性」里点"仍要打开"也经常失败。最可靠的一行命令：
